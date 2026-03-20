@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+*.tmp
+
+# Large/generated artifacts
+data/raw/*
+data/processed/*
+data/gt/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/gt/.gitkeep
+
+outputs/masks/*
+outputs/videos/*
+outputs/figures/*
+outputs/metrics/*
+outputs/logs/*
+!outputs/masks/.gitkeep
+!outputs/videos/.gitkeep
+!outputs/figures/.gitkeep
+!outputs/metrics/.gitkeep
+!outputs/logs/.gitkeep
+
+# Model checkpoints and weights
+checkpoints/
+weights/

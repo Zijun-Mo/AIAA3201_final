@@ -1,0 +1,246 @@
+     Project 3: Video Object Removal & Inpainting
+                     AIAA 3201—Introduction to Computer Vision
+
+
+                                 Term Project Instruction
+
+                                        Spring 2026
+
+
+
+
+1    Overview
+Core Task: Given a video containing dynamic objects (e.g., pedestrians, vehicles), students
+are required to design a pipeline to automatically identify and remove these dynamic objects.
+Furthermore, the missing regions must be filled using temporal information to restore a clean
+background.
+Key Concepts:
+    • Optical Flow: Temporal Consistency.
+    • Segmentation & Object Detection: Mask Extraction.
+    • Vision Transformer: Feature Extraction.
+    • Generative AI: Video Inpainting.
+Group Size: 2 students per group.
+
+
+2    Submission Requirements
+    • PDF Report (Mandatory):
+
+
+                                             1
+         – Format: Use the CVPR LaTeX Template. The length must be 6–8 pages (exclud-
+           ing references).
+         – ArXiv Upload: You are required to upload your final report to arXiv. Remember
+           to change the “REVIEW version” to “CAMERA-READY version” in template.
+         – Content Requirements:
+            1. Abstract & Introduction: Background, motivation and solution overview.
+               Explicitly include your GitHub repository link at the end of abstract.
+            2. Related Work: You must review and cite at least all papers listed in the
+               Reference Section (Section 4). Expanding beyond this list is encouraged.
+            3. Method: Explain the technical roadmaps in your own words. Use high-
+               quality flowcharts to assist your explanation.
+            4. Experiments: Present quantitative results (Tables) and qualitative analysis
+               (Figures).
+            5. Conclusion: Summary, limitations, and future work.
+    • Code (Mandatory): Upload your code to a public GitHub repository with a clear
+      README.md explaining how to run it. Do not submit raw code files. Include dependencies,
+      usage, weights, and visual results in your README.
+    • Demo Video (Mandatory): You are required to submit processed video files for
+      all mandatory datasets. Pack them into a zip file named videos.zip and upload it to
+      Canvas.
+
+Important Tips for Success
+    • Method Flexibility: You are encouraged to follow our suggested roadmap, but you are
+      also free to design your own optimal method. Strict adherence to the “Implementation
+      Roadmap” is not mandatory as long as the core tasks are fulfilled.
+    • Completeness: All three parts are mandatory. If you fail to complete Part 3, you
+      must discuss the reasons and demonstrate failure cases to receive decent score. Ignoring
+      it completely will result in an “Incomplete” grade.
+    • Visuals: Clean and aesthetic visualizations (e.g., flowcharts, rendering comparisons) are
+      crucial for a Computer Vision course and will significantly improve your score.
+    • Dataset Scope: Completing only the mandatory datasets ensures a passing grade. To
+      achieve a high score, you are expected to report experimental results on additional data.
+    • Citations: Ensure all related works and methods are correctly cited.
+
+
+3     Guide to Start
+To help you get started efficiently, we recommend the following workflow:
+    1. Step 1: Literature Review. Carefully read the papers listed in the Recommended
+       Reading List (Section 4). Understanding the core concepts of Object Detection, Seg-
+       mentation and Inpainting is crucial before coding.
+    2. Step 2: Code Familiarization. Clone the official repositories of the baseline methods
+       (e.g., ProPainter). Run their provided demos to ensure your environment is set up and
+       you understand the input/output formats.
+
+                                               2
+    3. Step 3: Experimentation. Run the methods on the Mandatory Datasets (see Sec-
+       tion 6.1). Adjust code as required by the roadmap. Save your visualization results.
+    4. Step 4: Writing & Submission. Organize your results into tables and figures. Write
+       your report using the CVPR template, citing ALL the references. Finally, upload your
+       report to arXiv and submit the PDF report to Canvas.
+
+
+4     Recommended Reading List
+    • Object Detection: R-CNN [4], Mask R-CNN [5], YOLO [11], DETR [2]
+    • Instance Segmentation: SAM [8], SAM2 [10], SAM3 [1], Track-Anything [15], VGGT4D
+      [6]
+    • Video Inpainting: FGVC [3], E2FGVI [9], ProPainter [17]
+
+
+5     Implementation Roadmap
+5.1    Part 1: The Baseline – “Hand-crafted Approach”
+Goal: Implement a complete video object removal and background restoration pipeline using
+basic computer vision knowledge and classic models. Understand the underlying logic from
+detection to restoration.
+
+1. Mask Extraction: Instance Segmentation
+    • Step 1: Semantic Extraction. Use a classic and mature Object Detection/Segmentation
+      model (e.g., YOLOv8-Seg or Mask R-CNN [5]) to extract masks for specific dynamic
+      classes (e.g., Person, Bicycle).
+    • Step 2: Dynamic Judgment. For each detected object mask, calculate the motion
+      magnitude of internal feature points using Sparse Optical Flow (e.g., Lucas-Kanade).
+      Set a threshold to filter out static objects.
+    • Advanced Idea: Apply Dilation to smooth mask edges and ensure coverage of motion
+      blur caused by moving objects.
+
+2. Inpainting: Traditional Image Processing
+    • Algorithm: Use cv2.inpaint (based on Telea or Navier-Stokes algorithms) to fill the
+      masked regions using spatial neighborhood pixel information.
+    • Advanced Idea: Temporal Background Propagation. Pure spatial repair often leads
+      to blurring. You are encouraged to utilize the temporal redundancy of the video to
+      prioritize “borrowing” clean background pixels from previous or subsequent frames at the
+      same location. Use spatial inpainting only as a fallback.
+Expected Result: Works well for simple videos with static backgrounds but may produce
+blurring in complex texture areas.
+
+5.2    Part 2: SOTA Reproduction – “AI-driven Pipeline”
+Goal: Engage with the latest open-source academic work and learn how to combine different
+SOTA modules to solve complex problems.
+
+
+
+                                              3
+1. Dynamic Mask Extraction
+Requirement: Choose ONE of the following methods to generate high-quality masks for
+dynamic objects.
+   • Option A: Track Anything [15].
+     A flexible pipeline that combines Segment Anything (SAM) and XMem to segment and
+     track objects in videos interactively.
+   • Option B: SAM 2 [10].
+     Meta’s unified foundation model that extends the promptable segmentation capability of
+     SAM to the video domain with real-time performance.
+   • Option C: VGGT4D [6].
+     A training-free approach that mines dynamic cues via Gram Similarity in Vision Trans-
+     former attention maps to achieve zero-shot segmentation.
+   • Option D: Open Choice.
+     Any other open-source method capable of fulfilling the dynamic object segmentation re-
+     quirement.
+
+2. Inpainting: ProPainter [17]
+   • Reason: A classic work from ICCV 2023. It combines Dual-domain Propagation
+     (Optical Flow + Features) and a Sparse Transformer. It effectively utilizes video
+     temporal redundancy to fill large occlusions.
+   • Alternatives: Students may also choose E2FGVI [9] or FGVC [3].
+Expected Result: Handles large occlusions effectively with clear background textures, out-
+performing Part 1.
+
+5.3   Part 3: Exploration – “Optimization & Extension”
+Goal: Identify limitations in existing methods (e.g., artifacts, inconsistent masks) and attempt
+improvements. Choose at least one direction below:
+   • Direction A (Mask Upgrade): Introduce SAM 3 [1].
+     Idea: Since Track Anything relies on the original SAM, replacing its backbone with
+     the state-of-the-art SAM 3 [1] can significantly enhance mask quality. Alternatively, if
+     using VGGT4D, use VGGT4D’s outputs as prompts for SAM 3 to refine rough edges
+     into pixel-perfect masks.
+   • Direction B (Better Mask): Transplant to Stronger Foundation Models.
+     Idea: VGGT4D’s limitations may stem from the underlying VGGT model. Transplant
+     the VGGT4D [13] method to a newer 3D foundation model, such as Pi3 [14] or MapA-
+     nything [7], to obtain more precise masks.
+   • Direction C (Generative Inpainting): Introduce Diffusion Models.
+     Idea: ProPainter may fail when the background never appears in the video (i.e., pixels
+     cannot be “borrowed” via propagation). Try using Stable Diffusion [12] (Inpainting
+     ControlNet [16]) to generatively repair keyframes and then propagate the results to
+     other frames.
+
+
+
+
+                                               4
+6     Dataset & Evaluation
+6.1    Datasets
+    1. Wild Video (Mandatory): Each group must film a real-world video (e.g., a corridor
+       with people walking) or generate a dynamic object-centric video using a model like SORA
+       to verify generalization capability. You can download from Baidu or Google.
+    2. Sample Data (Mandatory): The provided bmx-trees and tennis scenes.
+    3. DAVIS Dataset (Optional but Recommended): A standard academic dataset pro-
+       viding high-quality videos and Ground Truth (GT) masks. Required for high scores.
+
+6.2    Metrics (Mandatory)
+    • Mask Quality: IoU mean (JM) and IoU recall (JR) (Reference: VGGT4D paper).
+      Evaluate mask accuracy for Part 1 and Part 2 (and Part 3 if improved).
+    • Video Quality: PSNR & SSIM (Reference: ProPainter paper). Calculate only for
+      experiments with Ground Truth. Note: You must submit the processed video files
+      for all Mandatory Datasets (Wild Video, bmx-trees, and tennis).
+    • Qualitative Evaluation: Visual comparison of restored frames across different methods.
+
+
+References
+[1] Nicolas Carion, Laura Gustafson, Yuan-Ting Hu, Shoubhik Debnath, Ronghang Hu, Didac
+    Suris, Chaitanya Ryali, Kalyan Vasudev Alwala, Haitham Khedr, Andrew Huang, et al.
+    Sam 3: Segment anything with concepts. arXiv preprint arXiv:2511.16719, 2025.
+[2] Nicolas Carion, Francisco Massa, Gabriel Synnaeve, Nicolas Usunier, Alexander Kirillov,
+    and Sergey Zagoruyko. End-to-end object detection with transformers. In European con-
+    ference on computer vision, pages 213–229. Springer, 2020.
+[3] Chen Gao, Ayush Saraf, Jia-Bin Huang, and Johannes Kopf. Flow-edge guided video
+    completion. In European Conference on Computer Vision, pages 713–729. Springer, 2020.
+[4] Ross Girshick, Jeff Donahue, Trevor Darrell, and Jitendra Malik. Rich feature hierarchies
+    for accurate object detection and semantic segmentation. In Proceedings of the IEEE
+    conference on computer vision and pattern recognition, pages 580–587, 2014.
+[5] Kaiming He, Georgia Gkioxari, Piotr Dollár, and Ross Girshick. Mask r-cnn. In Proceedings
+    of the IEEE international conference on computer vision, pages 2961–2969, 2017.
+[6] Yu Hu, Chong Cheng, Sicheng Yu, Xiaoyang Guo, and Hao Wang. Vggt4d: Mining mo-
+    tion cues in visual geometry transformers for 4d scene reconstruction. arXiv preprint
+    arXiv:2511.19971, 2025.
+[7] Nikhil Keetha, Norman Muller, Johannes Schonberger, Lorenzo Porzi, Yuchen Zhang, To-
+    bias Fischer, Arno Knapitsch, Duncan Zauss, Ethan Weber, Nelson Antunes, et al. Mapany-
+    thing: Universal feed-forward metric 3d reconstruction. arXiv preprint arXiv:2509.13414,
+    2025.
+[8] Alexander Kirillov, Eric Mintun, Nikhila Ravi, Hanzi Mao, Chloe Rolland, Laura
+    Gustafson, Tete Xiao, Spencer Whitehead, Alexander C Berg, Wan-Yen Lo, et al. Segment
+    anything. In Proceedings of the IEEE/CVF international conference on computer vision,
+    pages 4015–4026, 2023.
+
+
+                                               5
+ [9] Zhen Li, Cheng-Ze Lu, Jianhua Qin, Chun-Le Guo, and Ming-Ming Cheng. Towards an
+     end-to-end framework for flow-guided video inpainting. In Proceedings of the IEEE/CVF
+     conference on computer vision and pattern recognition, pages 17562–17571, 2022.
+[10] Nikhila Ravi, Valentin Gabeur, Yuan-Ting Hu, Ronghang Hu, Chaitanya Ryali, Tengyu
+     Ma, Haitham Khedr, Roman Rädle, Chloe Rolland, Laura Gustafson, et al. Sam 2: Seg-
+     ment anything in images and videos. arXiv preprint arXiv:2408.00714, 2024.
+[11] Joseph Redmon, Santosh Divvala, Ross Girshick, and Ali Farhadi. You only look once:
+     Unified, real-time object detection. In Proceedings of the IEEE conference on computer
+     vision and pattern recognition, pages 779–788, 2016.
+[12] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Om-
+     mer. High-resolution image synthesis with latent diffusion models. In Proceedings of the
+     IEEE/CVF conference on computer vision and pattern recognition, pages 10684–10695,
+     2022.
+[13] Jianyuan Wang, Minghao Chen, Nikita Karaev, Andrea Vedaldi, Christian Rupprecht,
+     and David Novotny. Vggt: Visual geometry grounded transformer. In Proceedings of the
+     Computer Vision and Pattern Recognition Conference, pages 5294–5306, 2025.
+[14] Yifan Wang, Jianjun Zhou, Haoyi Zhu, Wenzheng Chang, Yang Zhou, Zizun Li, Junyi
+     Chen, Jiangmiao Pang, Chunhua Shen, and Tong He. Pi3: Permutation-equivariant visual
+     geometry learning. arXiv preprint arXiv:2507.13347, 2025.
+[15] Jinyu Yang, Mingqi Gao, Zhe Li, Shang Gao, Fangjing Wang, and Feng Zheng. Track
+     anything: Segment anything meets videos. arXiv preprint arXiv:2304.11968, 2023.
+[16] Lvmin Zhang, Anyi Rao, and Maneesh Agrawala. Adding conditional control to text-
+     to-image diffusion models. In Proceedings of the IEEE/CVF international conference on
+     computer vision, pages 3836–3847, 2023.
+[17] Shangchen Zhou, Chongyi Li, Kelvin CK Chan, and Chen Change Loy. Propainter: Im-
+     proving propagation and transformer for video inpainting. In Proceedings of the IEEE/CVF
+     international conference on computer vision, pages 10477–10486, 2023.
+
+
+
+
+                                             6
+

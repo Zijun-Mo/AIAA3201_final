@@ -1,0 +1,17 @@
+project:
+  name: aiaa3201-project3
+  seed: 42
+
+paths:
+  raw_data_dir: data/raw
+  processed_data_dir: data/processed
+  gt_data_dir: data/gt
+  output_dir: outputs
+
+preprocess:
+  target_fps: 24
+  target_width: 1280
+  target_height: 720
+
+evaluation:
+  jr_iou_threshold: 0.5
