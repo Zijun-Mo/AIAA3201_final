@@ -30,7 +30,7 @@
 
 ### 任务
 - 数据集整理：Wild、bmx-trees、tennis、可选 DAVIS。
-- 统一预处理：分辨率、fps、帧命名、mask 格式。
+- 统一预处理：分辨率、fps、帧命名、mask 格式。  
 - 统一评价协议：JM/JR、PSNR/SSIM、可视化样式。
 - 建立实验记录模板。
 

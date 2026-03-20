@@ -12,6 +12,30 @@ preprocess:
   target_fps: 24
   target_width: 1280
   target_height: 720
+  frame_format: png
+  frame_name_template: frame_%06d
 
 evaluation:
   jr_iou_threshold: 0.5
+  allow_missing_gt: true
+  save_visualization: true
+
+datasets:
+  mandatory:
+    wild:
+      raw_video: data/raw/wild.mp4
+      processed_frames_dir: data/processed/wild/frames
+      gt_frames_dir: data/gt/wild/frames
+    bmx-trees:
+      raw_video: data/raw/bmx-trees.mp4
+      processed_frames_dir: data/processed/bmx-trees/frames
+      gt_frames_dir: data/gt/bmx-trees/frames
+    tennis:
+      raw_video: data/raw/tennis.mp4
+      processed_frames_dir: data/processed/tennis/frames
+      gt_frames_dir: data/gt/tennis/frames
+  optional:
+    davis:
+      raw_video: data/raw/davis.mp4
+      processed_frames_dir: data/processed/davis/frames
+      gt_frames_dir: data/gt/davis/frames

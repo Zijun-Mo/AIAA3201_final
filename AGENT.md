@@ -140,7 +140,7 @@ AI Agent 在执行任务时必须：
 - 代码可运行，命令可复现。
 - mandatory 数据集结果完整可追溯。
 - 指标文件、可视化与文字结论一致。
-- README/文档更新到位。
+- README/AGENT等文档更新到位。
 - 若是阶段性结果，明确下一步与风险。
 
 ## 9. 冲突处理原则
@@ -152,3 +152,39 @@ AI Agent 在执行任务时必须：
 
 如有不确定，先保守执行：优先可复现、可解释、可交付。
 
+## 10. 环境基线规范
+
+- 默认 conda 环境名称：`aiaa3201`。
+- 默认 Python 版本：`3.10.x`。
+- 环境入口文件：`environment.yml`。
+- GPU 依赖策略：PyTorch 使用官方 `cu121` wheel 索引安装，不在 conda 中一次性求解重型 CUDA 栈。
+
+### 10.1 分阶段安装要求（同一环境）
+
+- Stage A（必须）：
+  - 执行 `pip install -r requirements.txt`。
+  - `requirements.txt` 中核心依赖采用强锁定版本。
+- Stage B（按需，SOTA 主线）：
+  - 安装 `torch/torchvision/torchaudio`（cu121）。
+  - 安装视频修复主线所需扩展依赖（推荐版本区间）。
+- Stage C（按需，Route G）：
+  - 仅在做 diffusion 相关实验时安装 `diffusers/transformers/accelerate/xformers`。
+
+## 11. 新增依赖流程
+
+新增依赖时必须按以下顺序执行：
+1. 在实验记录中写明用途（对应路线/模块）与版本策略（强锁定或推荐区间）。
+2. 更新 `requirements.txt` 或 README 的 Stage B/Stage C 依赖段。
+3. 补充验证命令（`import` 或最小运行命令）。
+4. 在提交说明中标注依赖变更影响范围。
+
+## 12. 复现实验前检查清单（环境）
+
+- `conda env list | grep aiaa3201` 输出存在。
+- `python -V` 为 `3.10.x`。
+- Stage A 校验：
+  - `python -c "import numpy, cv2, yaml, skimage, matplotlib; print('core ok')"`
+- Stage B 校验（若启用）：
+  - `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`
+- 记录当前依赖快照（建议）：
+  - `pip freeze > outputs/logs/pip_freeze_<date>.txt`

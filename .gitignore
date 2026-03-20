@@ -24,6 +24,7 @@ Thumbs.db
 data/raw/*
 data/processed/*
 data/gt/*
+data/external/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/gt/.gitkeep
