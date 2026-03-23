@@ -83,7 +83,7 @@
 | B2 | ProPainter 接入 | 固定 mask 输入 | 0.5 天 | 跑通主链路 |
 | B3 | 上游质量影响 | 粗 mask vs 精 mask | 0.5 天 | 证明 mask 重要性 |
 | B4 | 推理参数实验 | clip length / neighbor frames | 0.5 天 | 找稳定配置 |
-| B5 | mandatory 全量评估 | Wild / bmx / tennis | 0.5-1 天 | 形成主结果表 |
+| B5 | mandatory 全量评估 | Wild     / bmx / tennis | 0.5-1 天 | 形成主结果表 |
 
 ### 输出
 - `B-best`（主方法）。
@@ -97,7 +97,7 @@
 - 风险：SOTA 环境复杂，短期无法稳定。
 - 回退：固定最稳分割 + 降低 ProPainter 参数规模，先保交付完整性。
 
----
+---     
 
 ## Phase 3：路线 E（低风险高收益优化，1.5-2 天）
 

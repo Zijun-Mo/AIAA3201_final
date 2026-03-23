@@ -20,6 +20,137 @@ evaluation:
   allow_missing_gt: true
   save_visualization: true
 
+part1:
+  dynamic_classes:
+    - person
+    - bicycle
+    - motorcycle
+    - car
+    - bus
+    - truck
+  keep_unknown_motion_as_dynamic: true
+  save_mp4: false
+  defaults:
+    flow_threshold: 1.2
+    dilation_kernel: 7
+    inpaint_method: telea
+    temporal_window: 1
+  segmentation:
+    yolo_model: yolov8n-seg.pt
+    yolo_conf_threshold: 0.25
+    yolo_imgsz: 960
+    maskrcnn_conf_threshold: 0.5
+  flow:
+    aggregation: median
+    max_corners: 200
+    quality_level: 0.01
+    min_distance: 5
+    block_size: 7
+    win_size: [21, 21]
+    max_level: 3
+    criteria_count: 30
+    criteria_eps: 0.01
+  inpaint:
+    radius: 3.0
+  fallback:
+    enable_wild_zero_mask_fallback: true
+    diff_threshold_percentile: 97.5
+    min_area_ratio: 0.000001
+    morph_kernel: 5
+  grids:
+    flow_thresholds: [0.8, 1.2, 1.6]
+    dilation_kernels: [3, 7, 11]
+    inpaint_methods: [telea, ns]
+    temporal_windows: [0, 1, 2]
+  runtime:
+    device: auto
+    auto_install_missing: true
+
+part2:
+  phase1_reference_exp_id: phase1_fix_acceptance_20260323
+  save_mp4: false
+  models:
+    sam2_repo: https://github.com/facebookresearch/sam2.git
+    sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+    sam2_checkpoint: outputs/external/part2/checkpoints/sam2.1_hiera_tiny.pt
+    trackanything_repo: https://github.com/gaomingqi/Track-Anything.git
+    trackanything_sam_model_type: vit_h
+    trackanything_mmcv_version: "2.2.0"
+    trackanything_sam_checkpoint: outputs/external/part2/checkpoints/sam_vit_h_4b8939.pth
+    trackanything_xmem_checkpoint: outputs/external/part2/checkpoints/XMem-s012.pth
+    trackanything_e2fgvi_checkpoint: outputs/external/part2/checkpoints/E2FGVI-HQ-CVPR22.pth
+  prompt:
+    detector: yolo
+    dynamic_classes:
+      - person
+      - bicycle
+      - motorcycle
+      - car
+      - bus
+      - truck
+    max_prompts: 3
+  mask_post:
+    refined_kernel: 5
+    temporal_smooth_window: 1
+  mask_fusion:
+    enable_phase1_prior: true
+    phase1_exp_id: ""
+    skip_datasets: [wild]
+    method: intersection
+    per_frame_low_ratio: 0.000001
+    empty_frame_fallback: phase1
+    mean_min_ratio: 0.0001
+    low_mean_fallback: phase1
+  selection:
+    exclude_datasets: [wild]
+  propainter:
+    repo_url: https://github.com/sczhou/ProPainter.git
+    balanced_profile:
+      neighbor_length: 10
+      ref_stride: 10
+      subvideo_length: 40
+      resize_ratio: 0.75
+      mask_dilation: 4
+      fp16: true
+    degraded_profile:
+      neighbor_length: 8
+      ref_stride: 14
+      subvideo_length: 28
+      resize_ratio: 0.66
+      mask_dilation: 4
+      fp16: true
+    profile_grid:
+      - name: balanced_a
+        neighbor_length: 10
+        ref_stride: 10
+        subvideo_length: 40
+        resize_ratio: 0.75
+        mask_dilation: 4
+        fp16: true
+      - name: balanced_b
+        neighbor_length: 8
+        ref_stride: 12
+        subvideo_length: 36
+        resize_ratio: 0.75
+        mask_dilation: 4
+        fp16: true
+      - name: balanced_lowmem
+        neighbor_length: 8
+        ref_stride: 14
+        subvideo_length: 28
+        resize_ratio: 0.66
+        mask_dilation: 4
+        fp16: true
+  fallback:
+    enable_cv2_inpaint_fallback: true
+    inpaint_method: ns
+    inpaint_radius: 3.0
+    temporal_window: 1
+  runtime:
+    device: auto
+    auto_install_missing: true
+    strict_dual_run: false
+
 datasets:
   mandatory:
     wild:

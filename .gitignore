@@ -43,3 +43,4 @@ outputs/logs/*
 # Model checkpoints and weights
 checkpoints/
 weights/
+yolov8n-seg.pt
