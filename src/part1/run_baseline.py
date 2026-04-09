@@ -19,9 +19,19 @@ import cv2
 import numpy as np
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.common.remove_quality import DynamicObjectDetector, compute_remove_quality
+from src.common.video_io import (
+    cleanup_video_only_outputs,
+    encode_dataset_h264_videos,
+    resolve_output_policy,
+)
+
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
-REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_SEG_MODELS = {"yolo", "maskrcnn"}
 
 
@@ -548,6 +558,11 @@ def build_dynamic_masks(
 
     stats = {
         "mean_mask_ratio": float(np.mean(np.array(coverage, dtype=np.float32))) if coverage else 0.0,
+        "active_frame_ratio": float(
+            np.mean(np.array([1.0 if x > 0.0 else 0.0 for x in coverage], dtype=np.float32))
+        )
+        if coverage
+        else 0.0,
         "kept_instance_count": float(kept_instances),
         "total_instance_count": float(total_instances),
     }
@@ -559,6 +574,13 @@ def compute_mean_mask_ratio(masks_u8: list[np.ndarray]) -> float:
         return 0.0
     ratios = [float((m > 0).mean()) for m in masks_u8]
     return float(np.mean(np.array(ratios, dtype=np.float32)))
+
+
+def compute_active_frame_ratio(masks_u8: list[np.ndarray]) -> float:
+    if not masks_u8:
+        return 0.0
+    active = [1.0 if int((np.asarray(m) > 0).sum()) > 0 else 0.0 for m in masks_u8]
+    return float(np.mean(np.array(active, dtype=np.float32)))
 
 
 def normalize_odd_kernel(kernel_size: int) -> int:
@@ -597,7 +619,11 @@ def build_wild_fallback_masks(
                 thr = float(diff_f.mean() + 0.5 * diff_f.std())
             bin_mask = (diff_f >= thr).astype(np.uint8) * 255
             masks.append(postprocess_motion_mask(bin_mask, morph_kernel))
-        return masks, {"fallback_source": source_name, "fallback_mean_mask_ratio": compute_mean_mask_ratio(masks)}
+        return masks, {
+            "fallback_source": source_name,
+            "fallback_mean_mask_ratio": compute_mean_mask_ratio(masks),
+            "fallback_active_frame_ratio": compute_active_frame_ratio(masks),
+        }
 
     neighbor_diffs: list[np.ndarray] = []
     n = len(gray_frames)
@@ -630,24 +656,27 @@ def build_wild_fallback_masks(
     stats = {
         "fallback_source": "max_diff_anchor",
         "fallback_mean_mask_ratio": compute_mean_mask_ratio(masks),
+        "fallback_active_frame_ratio": compute_active_frame_ratio(masks),
     }
     return masks, stats
 
 
 def classify_failure_case(
     dataset: str,
-    psnr: float,
-    edge_diff: float,
-    texture_ratio: float,
+    ros: float,
+    tcf: float,
+    bes: float,
     wild_fallback_applied: bool,
 ) -> str:
     if dataset == "wild" and wild_fallback_applied:
-        return "missed_detection_then_fallback"
-    if psnr < 24.0 and edge_diff > 0.06:
-        return "boundary_residue"
-    if psnr < 24.0 and texture_ratio < 0.75:
-        return "texture_loss"
-    return "temporal_flicker_suspected"
+        return "residual_object_fallback_recovery"
+    if ros > 0.05:
+        return "residual_object"
+    if tcf > 0.12:
+        return "temporal_flicker"
+    if bes > 0.15:
+        return "boundary_artifact"
+    return "minor_artifact"
 
 
 def temporal_borrow_fill(
@@ -712,7 +741,9 @@ def write_dataset_outputs(
     masks_u8: list[np.ndarray],
     target_fps: float,
     save_mp4: bool,
-) -> None:
+    output_policy: dict[str, Any] | None = None,
+) -> dict[str, str | None]:
+    policy = resolve_output_policy(output_policy)
     ds_root = out_root / dataset_name
     frame_dir = ds_root / "frames"
     mask_dir = ds_root / "masks"
@@ -735,6 +766,20 @@ def write_dataset_outputs(
         for frame in restored_frames:
             writer.write(frame)
         writer.release()
+
+    restored_video_path, mask_video_path = encode_dataset_h264_videos(
+        dataset_root=ds_root,
+        restored_frames_bgr=restored_frames,
+        masks_u8=masks_u8,
+        fps=float(target_fps) if float(target_fps) > 0 else 24.0,
+        output_policy=policy,
+    )
+    return {
+        "frame_dir": str(frame_dir),
+        "mask_dir": str(mask_dir),
+        "restored_video": str(restored_video_path) if restored_video_path is not None else None,
+        "mask_video": str(mask_video_path) if mask_video_path is not None else None,
+    }
 
 
 def run_evaluation(
@@ -781,28 +826,95 @@ def metric_or_neg_inf(agg: dict[str, Any], key: str) -> float:
     return float(value)
 
 
-def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float, float]:
+def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float]:
     jm = metric_or_neg_inf(agg, "JM")
     jr = metric_or_neg_inf(agg, "JR")
-    psnr = metric_or_neg_inf(agg, "PSNR")
-    ssim = metric_or_neg_inf(agg, "SSIM")
+    q_remove = metric_or_neg_inf(agg, "Q_REMOVE")
 
     # A1-A3 prioritize mask quality first; A4-A5 prioritize reconstruction quality.
     if stage in {"A1", "A2", "A3"}:
-        return (jm, jr, psnr, ssim, -abs(mean_mask_ratio - 0.1))
-    return (psnr, ssim, jm, jr, -abs(mean_mask_ratio - 0.1))
+        return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
+    return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
 
 
-def select_best(stage: str, entries: list[CandidateResult]) -> CandidateResult:
+def parse_selection_coverage_constraints(selection_cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
+    mean_cfg = selection_cfg.get("min_mean_mask_ratio_by_dataset", {}) or {}
+    active_cfg = selection_cfg.get("min_active_frame_ratio_by_dataset", {}) or {}
+    constraints: dict[str, dict[str, float]] = {}
+
+    if not isinstance(mean_cfg, dict):
+        mean_cfg = {}
+    if not isinstance(active_cfg, dict):
+        active_cfg = {}
+
+    for ds in sorted(set([str(k).strip() for k in mean_cfg.keys()] + [str(k).strip() for k in active_cfg.keys()])):
+        if not ds:
+            continue
+        req: dict[str, float] = {}
+        if ds in mean_cfg:
+            req["min_mean_mask_ratio"] = float(mean_cfg.get(ds, 0.0))
+        if ds in active_cfg:
+            req["min_active_frame_ratio"] = float(active_cfg.get(ds, 0.0))
+        constraints[ds] = req
+    return constraints
+
+
+def candidate_meets_coverage_constraints(
+    entry: CandidateResult,
+    coverage_constraints: dict[str, dict[str, float]],
+) -> bool:
+    if not coverage_constraints:
+        return True
+    for ds, req in coverage_constraints.items():
+        ds_stats = entry.mask_stats.get(ds, {}) or {}
+        if not ds_stats:
+            continue
+        mean_ratio = float(ds_stats.get("mean_mask_ratio", 0.0))
+        active_ratio = float(
+            ds_stats.get(
+                "active_frame_ratio",
+                1.0 if mean_ratio > 0.0 else 0.0,
+            )
+        )
+        if "min_mean_mask_ratio" in req and mean_ratio < float(req["min_mean_mask_ratio"]):
+            return False
+        if "min_active_frame_ratio" in req and active_ratio < float(req["min_active_frame_ratio"]):
+            return False
+    return True
+
+
+def select_best(
+    stage: str,
+    entries: list[CandidateResult],
+    coverage_constraints: dict[str, dict[str, float]] | None = None,
+    enforce_if_candidate_available: bool = True,
+    logger: logging.Logger | None = None,
+) -> CandidateResult:
     if not entries:
         raise ValueError(f"No candidate results to select from in stage {stage}")
 
-    def score(entry: CandidateResult) -> tuple[float, float, float, float, float]:
+    pool = entries
+    constraints = coverage_constraints or {}
+    if constraints:
+        eligible = [e for e in entries if candidate_meets_coverage_constraints(e, constraints)]
+        if eligible:
+            pool = eligible
+        elif enforce_if_candidate_available:
+            if logger is not None:
+                logger.warning(
+                    "[%s] No candidate met coverage constraints=%s, fallback to all candidates.",
+                    stage,
+                    constraints,
+                )
+        else:
+            raise ValueError(f"No candidate meets coverage constraints in stage {stage}: {constraints}")
+
+    def score(entry: CandidateResult) -> tuple[float, float, float, float]:
         ratios = [v.get("mean_mask_ratio", 0.0) for v in entry.mask_stats.values()]
         mean_ratio = float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
         return stage_score(stage, entry.aggregate, mean_ratio)
 
-    return max(entries, key=score)
+    return max(pool, key=score)
 
 
 def copy_a_best(best_candidate_root: Path, final_root: Path, datasets: list[str]) -> None:
@@ -821,6 +933,12 @@ def build_failure_case_index(
     gt_root: Path,
     datasets: list[str],
     out_dir: Path,
+    detector: DynamicObjectDetector,
+    quality_weights: dict[str, float],
+    tcf_dilate_kernel: int,
+    bes_dilate_kernel: int,
+    bes_erode_kernel: int,
+    bes_sobel_ksize: int,
     fallback_applied_map: dict[str, bool] | None = None,
     top_k: int = 3,
 ) -> tuple[Path, Path]:
@@ -831,74 +949,84 @@ def build_failure_case_index(
 
     for ds in datasets:
         pred_dir = pred_root / ds / "frames"
-        gt_dir = gt_root / ds / "frames"
+        mask_dir = pred_root / ds / "masks"
         pred_paths = list_images(pred_dir)
-        gt_map = {p.name: p for p in list_images(gt_dir)}
-        if not pred_paths or not gt_map:
+        mask_map = {p.name: p for p in list_images(mask_dir)}
+        if not pred_paths:
             continue
 
-        scores: list[tuple[float, Path, Path]] = []
+        frames: list[np.ndarray] = []
+        masks: list[np.ndarray] = []
+        frame_names: list[str] = []
         for pp in pred_paths:
-            gp = gt_map.get(pp.name)
-            if gp is None:
-                continue
             pi = cv2.imread(str(pp), cv2.IMREAD_COLOR)
-            gi = cv2.imread(str(gp), cv2.IMREAD_COLOR)
-            if pi is None or gi is None:
+            if pi is None:
                 continue
-            if pi.shape != gi.shape:
-                gi = cv2.resize(gi, (pi.shape[1], pi.shape[0]), interpolation=cv2.INTER_LINEAR)
-            p = float(cv2.PSNR(pi, gi))
-            scores.append((p, pp, gp))
+            mp = mask_map.get(pp.name)
+            if mp is None:
+                pm = np.zeros(pi.shape[:2], dtype=np.uint8)
+            else:
+                pm = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
+                if pm is None:
+                    pm = np.zeros(pi.shape[:2], dtype=np.uint8)
+                elif pm.shape != pi.shape[:2]:
+                    pm = cv2.resize(pm, (pi.shape[1], pi.shape[0]), interpolation=cv2.INTER_NEAREST)
+            frames.append(pi)
+            masks.append(pm)
+            frame_names.append(pp.name)
 
-        scores.sort(key=lambda x: x[0])
-        for rank, (psnr, pp, gp) in enumerate(scores[:top_k], start=1):
-            pi = cv2.imread(str(pp), cv2.IMREAD_COLOR)
-            gi = cv2.imread(str(gp), cv2.IMREAD_COLOR)
-            if pi is None or gi is None:
-                continue
-            if pi.shape != gi.shape:
-                gi = cv2.resize(gi, (pi.shape[1], pi.shape[0]), interpolation=cv2.INTER_LINEAR)
+        if not frames:
+            continue
 
-            concat = cv2.hconcat([pi, gi])
-            out_img = out_dir / f"{ds}_{pp.stem}_rank{rank}_psnr{psnr:.2f}.png"
-            cv2.imwrite(str(out_img), concat)
+        _, per_frame_metrics, _ = compute_remove_quality(
+            frames_bgr=frames,
+            masks_u8=masks,
+            detector=detector,
+            quality_weights=quality_weights,
+            tcf_dilate_kernel=tcf_dilate_kernel,
+            bes_dilate_kernel=bes_dilate_kernel,
+            bes_erode_kernel=bes_erode_kernel,
+            bes_sobel_ksize=bes_sobel_ksize,
+        )
+        scored = sorted(
+            [(float(m.get("Q_REMOVE", 1.0)), idx) for idx, m in enumerate(per_frame_metrics)],
+            key=lambda x: x[0],
+        )
 
-            pred_gray = cv2.cvtColor(pi, cv2.COLOR_BGR2GRAY)
-            gt_gray = cv2.cvtColor(gi, cv2.COLOR_BGR2GRAY)
-            pred_edge = cv2.Canny(pred_gray, 80, 160)
-            gt_edge = cv2.Canny(gt_gray, 80, 160)
-            edge_diff = float(np.mean((pred_edge != gt_edge).astype(np.float32)))
-
-            pred_tex = float(np.var(cv2.Laplacian(pred_gray, cv2.CV_32F)))
-            gt_tex = float(np.var(cv2.Laplacian(gt_gray, cv2.CV_32F)))
-            texture_ratio = float(pred_tex / (gt_tex + 1e-6))
-
+        for rank, (q_remove, idx) in enumerate(scored[:top_k], start=1):
+            frame = frames[idx]
+            name = frame_names[idx]
+            out_img = out_dir / f"{ds}_{Path(name).stem}_rank{rank}_qremove{q_remove:.4f}.png"
+            cv2.imwrite(str(out_img), frame)
+            ros = float(per_frame_metrics[idx].get("ROS", 0.0))
+            tcf = float(per_frame_metrics[idx].get("TCF", 0.0))
+            bes = float(per_frame_metrics[idx].get("BES", 0.0))
             explanation = classify_failure_case(
                 dataset=ds,
-                psnr=float(psnr),
-                edge_diff=edge_diff,
-                texture_ratio=texture_ratio,
+                ros=ros,
+                tcf=tcf,
+                bes=bes,
                 wild_fallback_applied=bool(fallback_applied_map.get(ds, False)),
             )
 
             rows.append(
                 {
                     "dataset": ds,
-                    "frame": pp.name,
+                    "frame": name,
                     "rank": rank,
-                    "psnr": psnr,
+                    "q_remove": q_remove,
                     "compare_image": str(out_img),
                 }
             )
             rows_explained.append(
                 {
                     "dataset": ds,
-                    "frame": pp.name,
+                    "frame": name,
                     "rank": rank,
-                    "psnr": psnr,
-                    "edge_diff": edge_diff,
-                    "texture_ratio": texture_ratio,
+                    "q_remove": q_remove,
+                    "ros": ros,
+                    "tcf": tcf,
+                    "bes": bes,
                     "explanation": explanation,
                     "compare_image": str(out_img),
                 }
@@ -906,7 +1034,7 @@ def build_failure_case_index(
 
     csv_path = out_dir / "failure_cases.csv"
     with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["dataset", "frame", "rank", "psnr", "compare_image"])
+        writer = csv.DictWriter(f, fieldnames=["dataset", "frame", "rank", "q_remove", "compare_image"])
         writer.writeheader()
         writer.writerows(rows)
 
@@ -918,9 +1046,10 @@ def build_failure_case_index(
                 "dataset",
                 "frame",
                 "rank",
-                "psnr",
-                "edge_diff",
-                "texture_ratio",
+                "q_remove",
+                "ros",
+                "tcf",
+                "bes",
                 "explanation",
                 "compare_image",
             ],
@@ -940,6 +1069,7 @@ def run_candidate(
     part1_cfg: dict,
     target_fps: float,
     wild_fallback_mask: bool,
+    output_policy: dict[str, Any],
     logger: logging.Logger,
 ) -> tuple[Path, dict[str, dict[str, Any]], dict[str, bool]]:
     candidate_root = out_root / spec.stage / spec.candidate_id
@@ -991,6 +1121,9 @@ def run_candidate(
                     fallback_applied = True
                     mask_stats["original_mean_mask_ratio"] = current_ratio
                     mask_stats["mean_mask_ratio"] = fallback_ratio
+                    mask_stats["active_frame_ratio"] = float(
+                        fb_stats.get("fallback_active_frame_ratio", compute_active_frame_ratio(fb_masks))
+                    )
                     mask_stats["fallback_applied"] = True
                     mask_stats["fallback_source"] = str(fb_stats.get("fallback_source", "unknown"))
                     mask_stats["fallback_trigger_ratio"] = fallback_trigger_ratio
@@ -1004,6 +1137,8 @@ def run_candidate(
 
         if not fallback_applied:
             mask_stats["fallback_applied"] = False
+        if "active_frame_ratio" not in mask_stats:
+            mask_stats["active_frame_ratio"] = compute_active_frame_ratio(masks_u8)
 
         restored_frames = restore_frames(
             frames=payload.frames,
@@ -1020,6 +1155,7 @@ def run_candidate(
             masks_u8=masks_u8,
             target_fps=target_fps,
             save_mp4=save_mp4,
+            output_policy=output_policy,
         )
         mask_stats_map[ds] = mask_stats
         fallback_applied_map[ds] = bool(mask_stats.get("fallback_applied", False))
@@ -1054,6 +1190,11 @@ def write_ablation_outputs(
     for r in all_results:
         ratios = [v.get("mean_mask_ratio", 0.0) for v in r.mask_stats.values()]
         mean_ratio = float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
+        active_ratios = [
+            v.get("active_frame_ratio", 1.0 if float(v.get("mean_mask_ratio", 0.0)) > 0 else 0.0)
+            for v in r.mask_stats.values()
+        ]
+        active_ratio = float(np.mean(np.array(active_ratios, dtype=np.float32))) if active_ratios else 0.0
         rows.append(
             {
                 "stage": r.spec.stage,
@@ -1065,9 +1206,12 @@ def write_ablation_outputs(
                 "temporal_window": r.spec.temporal_window,
                 "JM": r.aggregate.get("JM"),
                 "JR": r.aggregate.get("JR"),
-                "PSNR": r.aggregate.get("PSNR"),
-                "SSIM": r.aggregate.get("SSIM"),
+                "ROS": r.aggregate.get("ROS"),
+                "TCF": r.aggregate.get("TCF"),
+                "BES": r.aggregate.get("BES"),
+                "Q_REMOVE": r.aggregate.get("Q_REMOVE"),
                 "mean_mask_ratio": mean_ratio,
+                "active_frame_ratio": active_ratio,
                 "pred_root": str(r.candidate_root),
                 "eval_exp_id": r.eval_exp_id,
                 "is_stage_best": int(stage_best_map.get(r.spec.stage) is r),
@@ -1089,9 +1233,12 @@ def write_ablation_outputs(
                 "temporal_window",
                 "JM",
                 "JR",
-                "PSNR",
-                "SSIM",
+                "ROS",
+                "TCF",
+                "BES",
+                "Q_REMOVE",
                 "mean_mask_ratio",
+                "active_frame_ratio",
                 "pred_root",
                 "eval_exp_id",
                 "is_stage_best",
@@ -1128,10 +1275,10 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
-    lines.append("| JM | JR | PSNR | SSIM |")
-    lines.append("| ---: | ---: | ---: | ---: |")
+    lines.append("| JM | JR | ROS | TCF | BES | Q_REMOVE |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: |")
     lines.append(
-        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('PSNR')} | {aggregate.get('SSIM')} |"
+        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} | {aggregate.get('Q_REMOVE')} |"
     )
     lines.append("")
     lines.append("## Stage Best")
@@ -1149,12 +1296,12 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Per-Dataset Metrics")
     lines.append("")
-    lines.append("| Dataset | JM | JR | PSNR | SSIM | Fallback Applied |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | --- |")
+    lines.append("| Dataset | JM | JR | ROS | TCF | BES | Q_REMOVE | Fallback Applied |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     for ds_name, ds_payload in datasets.items():
         metrics = ds_payload.get("metrics", {}) or {}
         lines.append(
-            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('PSNR')} | {metrics.get('SSIM')} | {bool(fallback_applied_final.get(ds_name, False))} |"
+            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} | {metrics.get('Q_REMOVE')} | {bool(fallback_applied_final.get(ds_name, False))} |"
         )
     lines.append("")
     lines.append("## Acceptance Checks")
@@ -1202,6 +1349,7 @@ def main() -> None:
     config_path = resolve_repo_path(Path(args.config))
     config = read_yaml(config_path)
     part1_cfg = config.get("part1", {}) or {}
+    output_policy = resolve_output_policy(config)
 
     ds_map, all_names, mandatory_names = collect_dataset_cfg(config)
     selected_datasets = resolve_dataset_names(args.datasets, all_names, mandatory_names)
@@ -1229,12 +1377,35 @@ def main() -> None:
         raise RuntimeError("No segmentation model available after dependency checks.")
     logger.info("Segmentation models: %s | device=%s", selected_models, device)
     logger.info("Wild fallback mask enabled=%s", str(wild_fallback_mask).lower())
+    logger.info(
+        "Output policy: video_only=%s write_h264_videos=%s auto_cleanup_intermediates=%s",
+        bool(output_policy.get("video_only", True)),
+        bool(output_policy.get("write_h264_videos", True)),
+        bool(output_policy.get("auto_cleanup_intermediates", True)),
+    )
 
     dynamic_classes = set(
         x.strip().lower()
         for x in part1_cfg.get(
             "dynamic_classes",
-            ["person", "bicycle", "motorcycle", "car", "bus", "truck"],
+            [
+                "person",
+                "bicycle",
+                "motorcycle",
+                "car",
+                "bus",
+                "truck",
+                "bird",
+                "cat",
+                "dog",
+                "horse",
+                "sheep",
+                "cow",
+                "elephant",
+                "bear",
+                "zebra",
+                "giraffe",
+            ],
         )
         if str(x).strip()
     )
@@ -1243,8 +1414,36 @@ def main() -> None:
     target_fps = float(config.get("preprocess", {}).get("target_fps", 24.0))
     gt_root = resolve_repo_path(Path(config.get("paths", {}).get("gt_data_dir", "data/gt")))
     eval_cfg = config.get("evaluation", {}) or {}
+    eval_selection_cfg = eval_cfg.get("selection", {}) or {}
+    selection_coverage_constraints = parse_selection_coverage_constraints(eval_selection_cfg)
+    enforce_selection_coverage = bool(eval_selection_cfg.get("enforce_if_candidate_available", True))
     allow_missing_gt = bool(eval_cfg.get("allow_missing_gt", True))
     save_visualization = bool(eval_cfg.get("save_visualization", True))
+    quality_weights_cfg = eval_cfg.get("quality_weights", {}) or {}
+    quality_weights = {
+        "ros": float(quality_weights_cfg.get("ros", 0.5)),
+        "tcf": float(quality_weights_cfg.get("tcf", 0.3)),
+        "bes": float(quality_weights_cfg.get("bes", 0.2)),
+    }
+    ros_cfg = eval_cfg.get("ros", {}) or {}
+    tcf_cfg = eval_cfg.get("tcf", {}) or {}
+    bes_cfg = eval_cfg.get("bes", {}) or {}
+    if selection_coverage_constraints:
+        logger.info(
+            "Selection coverage constraints=%s enforce_if_candidate_available=%s",
+            selection_coverage_constraints,
+            str(enforce_selection_coverage).lower(),
+        )
+    seg_cfg = part1_cfg.get("segmentation", {}) or {}
+    detector = DynamicObjectDetector(
+        backend_priority=[str(x).strip().lower() for x in (ros_cfg.get("backend_priority", ["yolo", "maskrcnn"]) or []) if str(x).strip()],
+        dynamic_classes=dynamic_classes,
+        yolo_model=str(seg_cfg.get("yolo_model", "yolov8n-seg.pt")),
+        yolo_conf=float(seg_cfg.get("yolo_conf_threshold", 0.25)),
+        yolo_imgsz=int(seg_cfg.get("yolo_imgsz", 960)),
+        maskrcnn_conf=float(seg_cfg.get("maskrcnn_conf_threshold", 0.5)),
+        device=device,
+    )
 
     pred_root_base = resolve_repo_path(Path(args.pred_root))
     exp_pred_root = pred_root_base / exp_id
@@ -1338,6 +1537,7 @@ def main() -> None:
                 part1_cfg=part1_cfg,
                 target_fps=target_fps,
                 wild_fallback_mask=wild_fallback_mask,
+                output_policy=output_policy,
                 logger=logger,
             )
             eval_exp_id = f"{exp_id}__{spec.stage}__{spec.candidate_id}"
@@ -1363,16 +1563,24 @@ def main() -> None:
             stage_results.append(result)
             all_results.append(result)
             logger.info(
-                "[%s] candidate=%s -> JM=%.4f JR=%.4f PSNR=%.4f SSIM=%.4f",
+                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f Q_REMOVE=%.4f",
                 stage_name,
                 spec.name,
                 metric_or_neg_inf(result.aggregate, "JM"),
                 metric_or_neg_inf(result.aggregate, "JR"),
-                metric_or_neg_inf(result.aggregate, "PSNR"),
-                metric_or_neg_inf(result.aggregate, "SSIM"),
+                metric_or_neg_inf(result.aggregate, "ROS"),
+                metric_or_neg_inf(result.aggregate, "TCF"),
+                metric_or_neg_inf(result.aggregate, "BES"),
+                metric_or_neg_inf(result.aggregate, "Q_REMOVE"),
             )
 
-        best = select_best(stage_name, stage_results)
+        best = select_best(
+            stage_name,
+            stage_results,
+            coverage_constraints=selection_coverage_constraints,
+            enforce_if_candidate_available=enforce_selection_coverage,
+            logger=logger,
+        )
         stage_best[stage_name] = best
         logger.info(
             "=== %s best: %s | seg=%s flow=%.3f dil=%d inpaint=%s temporal=%d ===",
@@ -1482,6 +1690,12 @@ def main() -> None:
         gt_root=gt_root,
         datasets=selected_datasets,
         out_dir=REPO_ROOT / "outputs" / "figures" / exp_id / "failure_cases",
+        detector=detector,
+        quality_weights=quality_weights,
+        tcf_dilate_kernel=int(tcf_cfg.get("dilate_kernel", 5)),
+        bes_dilate_kernel=int(bes_cfg.get("dilate_kernel", 5)),
+        bes_erode_kernel=int(bes_cfg.get("erode_kernel", 3)),
+        bes_sobel_ksize=int(bes_cfg.get("sobel_ksize", 3)),
         fallback_applied_map={ds: bool(v.get("fallback_applied", False)) for ds, v in best_a5.mask_stats.items()},
         top_k=3,
     )
@@ -1509,6 +1723,7 @@ def main() -> None:
             "device": device,
             "selected_models": selected_models,
             "wild_fallback_mask_enabled": wild_fallback_mask,
+            "output_policy": output_policy,
             "stage_best": {k: asdict(v.spec) for k, v in stage_best.items()},
             "a_best_candidate_root": str(best_a5.candidate_root),
             "a_best_pred_root": str(exp_pred_root),
@@ -1522,6 +1737,13 @@ def main() -> None:
             "log_path": str(log_path),
         },
     )
+
+    cleanup_stats = cleanup_video_only_outputs(
+        exp_pred_root=exp_pred_root,
+        datasets=selected_datasets,
+        output_policy=output_policy,
+    )
+    logger.info("Video-only cleanup stats: %s", cleanup_stats)
 
     logger.info("Phase 1 complete.")
     logger.info("A-best summary: %s", final_summary_path)

@@ -34,6 +34,8 @@ outputs/videos/*
 outputs/figures/*
 outputs/metrics/*
 outputs/logs/*
+outputs/external/*
+outputs/tmp_mask_eval/*
 !outputs/masks/.gitkeep
 !outputs/videos/.gitkeep
 !outputs/figures/.gitkeep

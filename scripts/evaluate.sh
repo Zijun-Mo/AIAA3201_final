@@ -7,7 +7,7 @@ if [ "$#" -eq 0 ]; then
     --config configs/base.yaml \
     --exp-id "$EXP_ID" \
     --datasets mandatory \
-    --pred-root outputs/videos \
+    --pred-root data/processed \
     --gt-root data/gt \
     --allow-missing-gt true
 else

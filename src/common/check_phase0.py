@@ -105,7 +105,7 @@ def suggestion_for(issue: str) -> str:
     if "missing manifest" in issue or "saved_frame_count" in issue:
         return "Run: bash scripts/preprocess.sh --datasets mandatory --overwrite"
     if "summary" in issue or "per_dataset" in issue or "figures" in issue:
-        return "Run: bash scripts/evaluate.sh --exp-id <exp_id> --datasets mandatory --pred-root outputs/videos --gt-root data/gt --allow-missing-gt true"
+        return "Run: bash scripts/evaluate.sh --exp-id <exp_id> --datasets mandatory --pred-root data/processed --gt-root data/gt --allow-missing-gt true"
     return "Check config paths and generated outputs, then rerun Phase 0 scripts."
 
 

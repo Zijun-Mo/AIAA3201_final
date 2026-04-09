@@ -2,10 +2,21 @@
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 
-import cv2
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.common.video_io import (
+    compute_mask_coverage_from_dir_or_video,
+    count_video_frames,
+    dataset_video_paths,
+    resolve_output_policy,
+)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
@@ -31,33 +42,73 @@ def list_images(folder: Path) -> list[Path]:
     return sorted([p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTS])
 
 
-def check_outputs(pred_root: Path, datasets: list[str]) -> list[str]:
+def get_wild_coverage_thresholds(config: dict) -> tuple[float, float]:
+    selection_cfg = ((config.get("evaluation", {}) or {}).get("selection", {}) or {})
+    mean_cfg = selection_cfg.get("min_mean_mask_ratio_by_dataset", {}) or {}
+    active_cfg = selection_cfg.get("min_active_frame_ratio_by_dataset", {}) or {}
+    if not isinstance(mean_cfg, dict):
+        mean_cfg = {}
+    if not isinstance(active_cfg, dict):
+        active_cfg = {}
+    return float(mean_cfg.get("wild", 0.0)), float(active_cfg.get("wild", 0.0))
+
+
+def check_outputs(
+    pred_root: Path,
+    datasets: list[str],
+    output_policy: dict,
+    wild_min_mean_mask_ratio: float,
+    wild_min_active_frame_ratio: float,
+) -> list[str]:
     issues: list[str] = []
     for ds in datasets:
-        frame_dir = pred_root / ds / "frames"
-        mask_dir = pred_root / ds / "masks"
+        ds_root = pred_root / ds
+        frame_dir = ds_root / "frames"
+        mask_dir = ds_root / "masks"
         frames = list_images(frame_dir)
         masks = list_images(mask_dir)
+        restored_video, mask_video = dataset_video_paths(ds_root, output_policy)
+        frame_video_count = count_video_frames(restored_video)
+        mask_video_count = count_video_frames(mask_video)
 
-        if not frames:
-            issues.append(f"{ds}: missing/empty frames dir {frame_dir}")
-        if not masks:
-            issues.append(f"{ds}: missing/empty masks dir {mask_dir}")
-        if frames and masks and len(frames) != len(masks):
-            issues.append(f"{ds}: frame/mask count mismatch ({len(frames)} vs {len(masks)})")
+        frame_count = len(frames) if frames else frame_video_count
+        mask_count = len(masks) if masks else mask_video_count
+        if frame_count <= 0:
+            issues.append(
+                f"{ds}: no prediction frames found in dir/video ({frame_dir}, {restored_video})"
+            )
+        if mask_count <= 0:
+            issues.append(
+                f"{ds}: no prediction masks found in dir/video ({mask_dir}, {mask_video})"
+            )
+        if frame_count > 0 and mask_count > 0 and frame_count != mask_count:
+            issues.append(f"{ds}: frame/mask count mismatch ({frame_count} vs {mask_count})")
 
-    # Explicit Phase 1 gate: wild final masks must not be all-zero.
-    wild_masks = list_images(pred_root / "wild" / "masks")
-    if wild_masks:
-        has_nonzero = False
-        for p in wild_masks:
-            m = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-            if m is None:
-                continue
-            if int((m > 0).sum()) > 0:
-                has_nonzero = True
-                break
-        if not has_nonzero:
+    if "wild" in datasets:
+        wild_ds_root = pred_root / "wild"
+        _, wild_mask_video = dataset_video_paths(wild_ds_root, output_policy)
+        coverage = compute_mask_coverage_from_dir_or_video(
+            mask_dir=wild_ds_root / "masks",
+            mask_video_path=wild_mask_video,
+            threshold=int(((output_policy.get("mask_h264", {}) or {}).get("threshold", 127))),
+        )
+        if int(coverage.get("frame_count", 0)) <= 0:
+            issues.append("wild: unable to compute mask coverage (no mask frames/video)")
+            return issues
+
+        mean_ratio = float(coverage.get("mean_mask_ratio", 0.0))
+        active_ratio = float(coverage.get("active_frame_ratio", 0.0))
+
+        if wild_min_mean_mask_ratio > 0.0 or wild_min_active_frame_ratio > 0.0:
+            if mean_ratio < wild_min_mean_mask_ratio:
+                issues.append(
+                    f"wild: mean_mask_ratio too low ({mean_ratio:.6f} < {wild_min_mean_mask_ratio:.6f})"
+                )
+            if active_ratio < wild_min_active_frame_ratio:
+                issues.append(
+                    f"wild: active_frame_ratio too low ({active_ratio:.6f} < {wild_min_active_frame_ratio:.6f})"
+                )
+        elif mean_ratio <= 0.0 or active_ratio <= 0.0:
             issues.append("wild: all final masks are zero")
     return issues
 
@@ -82,8 +133,30 @@ def check_metrics(metrics_dir: Path) -> list[str]:
                 summary = json.load(f)
             if not isinstance(summary.get("datasets", {}), dict):
                 issues.append(f"invalid summary datasets field: {summary_path}")
+            agg = summary.get("aggregate", {}) or {}
+            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+                if key not in agg:
+                    issues.append(f"missing aggregate metric '{key}' in {summary_path}")
+            for key in ["PSNR", "SSIM"]:
+                if key in agg:
+                    issues.append(f"forbidden legacy metric '{key}' in {summary_path}")
         except Exception as e:
             issues.append(f"invalid summary.json ({e})")
+
+    per_dataset_csv = metrics_dir / "per_dataset.csv"
+    if per_dataset_csv.exists():
+        try:
+            with per_dataset_csv.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                headers = set(reader.fieldnames or [])
+            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+                if key not in headers:
+                    issues.append(f"missing column '{key}' in {per_dataset_csv}")
+            for key in ["PSNR", "SSIM"]:
+                if key in headers:
+                    issues.append(f"forbidden legacy column '{key}' in {per_dataset_csv}")
+        except Exception as e:
+            issues.append(f"invalid per_dataset.csv ({e})")
     return issues
 
 
@@ -118,6 +191,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    output_policy = resolve_output_policy(config)
+    wild_min_mean_mask_ratio, wild_min_active_frame_ratio = get_wild_coverage_thresholds(config)
     mandatory = get_mandatory_datasets(config)
 
     pred_root = args.pred_root / args.exp_id
@@ -125,7 +200,15 @@ def main() -> None:
     figures_dir = args.figures_root / args.exp_id
 
     issues: list[str] = []
-    issues.extend(check_outputs(pred_root=pred_root, datasets=mandatory))
+    issues.extend(
+        check_outputs(
+            pred_root=pred_root,
+            datasets=mandatory,
+            output_policy=output_policy,
+            wild_min_mean_mask_ratio=wild_min_mean_mask_ratio,
+            wild_min_active_frame_ratio=wild_min_active_frame_ratio,
+        )
+    )
     issues.extend(check_metrics(metrics_dir=metrics_dir))
     issues.extend(check_failure_explanations(figures_dir=figures_dir))
 
@@ -141,4 +224,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

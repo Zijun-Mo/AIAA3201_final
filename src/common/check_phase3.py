@@ -77,10 +77,8 @@ def check_outputs(pred_root: Path, datasets: list[str], output_policy: dict) -> 
         restored_video, mask_video = dataset_video_paths(ds_root, output_policy)
         frame_video_count = count_video_frames(restored_video)
         mask_video_count = count_video_frames(mask_video)
-
         frame_count = len(frames) if frames else frame_video_count
         mask_count = len(masks) if masks else mask_video_count
-
         if frame_count <= 0:
             issues.append(
                 f"{ds}: no prediction frames found in dir/video ({frame_dir}, {restored_video})"
@@ -91,119 +89,7 @@ def check_outputs(pred_root: Path, datasets: list[str], output_policy: dict) -> 
             )
         if frame_count > 0 and mask_count > 0 and frame_count != mask_count:
             issues.append(f"{ds}: frame/mask count mismatch ({frame_count} vs {mask_count})")
-
     return issues
-
-
-def check_metrics(metrics_dir: Path) -> list[str]:
-    issues: list[str] = []
-    required = [
-        metrics_dir / "summary.json",
-        metrics_dir / "per_dataset.csv",
-        metrics_dir / "phase2_ablation.csv",
-        metrics_dir / "phase2_selection.json",
-        metrics_dir / "phase2_acceptance_report.md",
-        metrics_dir / "phase2_a_vs_b.csv",
-    ]
-    for p in required:
-        if not p.exists():
-            issues.append(f"missing required file: {p}")
-
-    summary_path = metrics_dir / "summary.json"
-    if summary_path.exists():
-        try:
-            with summary_path.open("r", encoding="utf-8") as f:
-                summary = json.load(f)
-            if not isinstance(summary.get("datasets", {}), dict):
-                issues.append(f"invalid summary datasets field: {summary_path}")
-            agg = summary.get("aggregate", {}) or {}
-            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
-                if key not in agg:
-                    issues.append(f"missing aggregate metric '{key}' in {summary_path}")
-            for key in ["PSNR", "SSIM"]:
-                if key in agg:
-                    issues.append(f"forbidden legacy metric '{key}' in {summary_path}")
-        except Exception as e:
-            issues.append(f"invalid summary.json ({e})")
-
-    per_dataset_csv = metrics_dir / "per_dataset.csv"
-    if per_dataset_csv.exists():
-        try:
-            with per_dataset_csv.open("r", encoding="utf-8") as f:
-                headers = set(csv.DictReader(f).fieldnames or [])
-            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
-                if key not in headers:
-                    issues.append(f"missing column '{key}' in {per_dataset_csv}")
-            for key in ["PSNR", "SSIM"]:
-                if key in headers:
-                    issues.append(f"forbidden legacy column '{key}' in {per_dataset_csv}")
-        except Exception as e:
-            issues.append(f"invalid per_dataset.csv ({e})")
-
-    compare_csv = metrics_dir / "phase2_a_vs_b.csv"
-    if compare_csv.exists():
-        try:
-            with compare_csv.open("r", encoding="utf-8") as f:
-                headers = set(csv.DictReader(f).fieldnames or [])
-            for key in ["delta_Q_REMOVE", "delta_JM", "delta_JR"]:
-                if key not in headers:
-                    issues.append(f"missing comparison column '{key}' in {compare_csv}")
-            for key in ["delta_PSNR", "delta_SSIM", "A_PSNR", "B_PSNR", "A_SSIM", "B_SSIM"]:
-                if key in headers:
-                    issues.append(f"forbidden legacy comparison column '{key}' in {compare_csv}")
-        except Exception as e:
-            issues.append(f"invalid phase2_a_vs_b.csv ({e})")
-
-    return issues
-
-
-def check_failure_explanations(figures_dir: Path) -> list[str]:
-    issues: list[str] = []
-    explained = figures_dir / "failure_cases" / "failure_cases_explained.csv"
-    if not explained.exists():
-        return [f"missing failure case explanation csv: {explained}"]
-
-    try:
-        with explained.open("r", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-    except Exception as e:
-        return [f"invalid failure_cases_explained.csv ({e})"]
-
-    if not rows:
-        issues.append(f"failure_cases_explained.csv has no rows: {explained}")
-    for idx, row in enumerate(rows, start=2):
-        if not str(row.get("explanation", "")).strip():
-            issues.append(f"missing explanation at {explained}:{idx}")
-            break
-    return issues
-
-
-def check_dual_run(metrics_dir: Path, strict_dual_run: bool) -> tuple[list[str], list[str]]:
-    issues: list[str] = []
-    warnings: list[str] = []
-
-    ablation = metrics_dir / "phase2_ablation.csv"
-    if not ablation.exists():
-        return [f"missing ablation csv for dual-run check: {ablation}"], warnings
-
-    try:
-        with ablation.open("r", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-    except Exception as e:
-        return [f"invalid phase2_ablation.csv ({e})"], warnings
-
-    b1_rows = [r for r in rows if str(r.get("stage", "")).strip() == "B1"]
-    backends = {str(r.get("mask_backend", "")).strip() for r in b1_rows if str(r.get("mask_backend", "")).strip()}
-    required = {"sam2", "trackanything"}
-    missing = sorted(list(required - backends))
-    if missing:
-        msg = f"B1 dual-run missing backend(s): {missing}; seen={sorted(list(backends))}"
-        if strict_dual_run:
-            issues.append(msg)
-        else:
-            warnings.append(msg)
-
-    return issues, warnings
 
 
 def check_nonzero_masks(pred_root: Path, datasets: list[str], output_policy: dict) -> list[str]:
@@ -256,18 +142,125 @@ def check_wild_coverage(
     return issues
 
 
+def check_metrics(metrics_dir: Path) -> list[str]:
+    issues: list[str] = []
+    required = [
+        metrics_dir / "summary.json",
+        metrics_dir / "per_dataset.csv",
+        metrics_dir / "phase3_ablation.csv",
+        metrics_dir / "phase3_selection.json",
+        metrics_dir / "phase3_b_vs_e.csv",
+        metrics_dir / "phase3_acceptance_report.md",
+        metrics_dir / "phase3_run_meta.json",
+    ]
+    for p in required:
+        if not p.exists():
+            issues.append(f"missing required file: {p}")
+
+    summary_path = metrics_dir / "summary.json"
+    if summary_path.exists():
+        try:
+            with summary_path.open("r", encoding="utf-8") as f:
+                summary = json.load(f)
+            agg = summary.get("aggregate", {}) or {}
+            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+                if key not in agg:
+                    issues.append(f"missing aggregate metric '{key}' in {summary_path}")
+            for key in ["PSNR", "SSIM"]:
+                if key in agg:
+                    issues.append(f"forbidden legacy metric '{key}' in {summary_path}")
+        except Exception as e:
+            issues.append(f"invalid summary.json ({e})")
+
+    per_dataset_csv = metrics_dir / "per_dataset.csv"
+    if per_dataset_csv.exists():
+        try:
+            with per_dataset_csv.open("r", encoding="utf-8") as f:
+                headers = set(csv.DictReader(f).fieldnames or [])
+            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+                if key not in headers:
+                    issues.append(f"missing column '{key}' in {per_dataset_csv}")
+            for key in ["PSNR", "SSIM"]:
+                if key in headers:
+                    issues.append(f"forbidden legacy column '{key}' in {per_dataset_csv}")
+        except Exception as e:
+            issues.append(f"invalid per_dataset.csv ({e})")
+
+    compare_csv = metrics_dir / "phase3_b_vs_e.csv"
+    if compare_csv.exists():
+        try:
+            with compare_csv.open("r", encoding="utf-8") as f:
+                headers = set(csv.DictReader(f).fieldnames or [])
+            for key in ["delta_Q_REMOVE", "delta_JM", "delta_JR"]:
+                if key not in headers:
+                    issues.append(f"missing comparison column '{key}' in {compare_csv}")
+            for key in ["delta_PSNR", "delta_SSIM", "B_PSNR", "E_PSNR", "B_SSIM", "E_SSIM"]:
+                if key in headers:
+                    issues.append(f"forbidden legacy comparison column '{key}' in {compare_csv}")
+        except Exception as e:
+            issues.append(f"invalid phase3_b_vs_e.csv ({e})")
+    return issues
+
+
+def check_failure_explanations(figures_dir: Path) -> list[str]:
+    issues: list[str] = []
+    explained = figures_dir / "failure_cases" / "failure_cases_explained.csv"
+    if not explained.exists():
+        return [f"missing failure case explanation csv: {explained}"]
+    try:
+        with explained.open("r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception as e:
+        return [f"invalid failure_cases_explained.csv ({e})"]
+
+    if not rows:
+        issues.append(f"failure_cases_explained.csv has no rows: {explained}")
+    for idx, row in enumerate(rows, start=2):
+        if not str(row.get("explanation", "")).strip():
+            issues.append(f"missing explanation at {explained}:{idx}")
+            break
+    return issues
+
+
+def check_sam3_permission(metrics_dir: Path, strict_sam3_permission: bool) -> tuple[list[str], list[str]]:
+    issues: list[str] = []
+    warnings: list[str] = []
+    run_meta_path = metrics_dir / "phase3_run_meta.json"
+    if not run_meta_path.exists():
+        return [f"missing run meta for SAM3 permission check: {run_meta_path}"], warnings
+
+    try:
+        with run_meta_path.open("r", encoding="utf-8") as f:
+            run_meta = json.load(f)
+    except Exception as e:
+        return [f"invalid phase3_run_meta.json ({e})"], warnings
+
+    sam3_perm = run_meta.get("sam3_permission", {})
+    if strict_sam3_permission:
+        if not isinstance(sam3_perm, dict):
+            issues.append("sam3_permission field missing/invalid in phase3_run_meta.json")
+            return issues, warnings
+        if not bool(sam3_perm.get("checked", False)):
+            issues.append("sam3_permission.checked is false under strict mode")
+        if not bool(sam3_perm.get("passed", False)):
+            issues.append("sam3_permission.passed is false under strict mode")
+    else:
+        if not isinstance(sam3_perm, dict):
+            warnings.append("sam3_permission field missing/invalid in phase3_run_meta.json")
+    return issues, warnings
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase 2 gate checker.")
+    parser = argparse.ArgumentParser(description="Phase 3 gate checker.")
     parser.add_argument("--exp-id", required=True)
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
     parser.add_argument("--pred-root", type=Path, default=Path("outputs/videos"))
     parser.add_argument("--metrics-root", type=Path, default=Path("outputs/metrics"))
     parser.add_argument("--figures-root", type=Path, default=Path("outputs/figures"))
-    parser.add_argument("--strict-dual-run", type=str, default="true")
+    parser.add_argument("--strict-sam3-permission", type=str, default="true")
     args = parser.parse_args()
 
-    strict_dual_run = str2bool(args.strict_dual_run, default=True)
-
+    strict_sam3_permission = str2bool(args.strict_sam3_permission, default=True)
     config = load_config(args.config)
     output_policy = resolve_output_policy(config)
     wild_min_mean_mask_ratio, wild_min_active_frame_ratio = get_wild_coverage_thresholds(config)
@@ -291,18 +284,18 @@ def main() -> None:
     )
     issues.extend(check_metrics(metrics_dir=metrics_dir))
     issues.extend(check_failure_explanations(figures_dir=figures_dir))
-    i2, w2 = check_dual_run(metrics_dir=metrics_dir, strict_dual_run=strict_dual_run)
+    i2, w2 = check_sam3_permission(metrics_dir=metrics_dir, strict_sam3_permission=strict_sam3_permission)
     issues.extend(i2)
     warnings.extend(w2)
 
     if issues:
-        print("FAIL: Phase 2 checks failed")
+        print("FAIL: Phase 3 checks failed")
         for i, issue in enumerate(issues, start=1):
             print(f"{i}. {issue}")
         raise SystemExit(1)
 
-    print("PASS: Phase 2 checks passed")
-    print(f"exp_id={args.exp_id}, mandatory={mandatory}, strict_dual_run={strict_dual_run}")
+    print("PASS: Phase 3 checks passed")
+    print(f"exp_id={args.exp_id}, mandatory={mandatory}, strict_sam3_permission={strict_sam3_permission}")
     for w in warnings:
         print(f"WARN: {w}")
 

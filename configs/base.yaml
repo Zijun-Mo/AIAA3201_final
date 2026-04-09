@@ -19,6 +19,47 @@ evaluation:
   jr_iou_threshold: 0.5
   allow_missing_gt: true
   save_visualization: true
+  metric_schema_version: v2_remove_quality
+  quality_weights:
+    ros: 0.5
+    tcf: 0.3
+    bes: 0.2
+  selection:
+    exclude_datasets: []
+    min_mean_mask_ratio_by_dataset:
+      wild: 0.002
+    min_active_frame_ratio_by_dataset:
+      wild: 0.25
+    enforce_if_candidate_available: true
+  ros:
+    backend_priority: [yolo, maskrcnn]
+    device: cpu
+  tcf:
+    dilate_kernel: 5
+  bes:
+    dilate_kernel: 5
+    erode_kernel: 3
+    sobel_ksize: 3
+
+output_policy:
+  video_only: true
+  write_h264_videos: true
+  auto_cleanup_intermediates: true
+  restored_video_name: restored_h264.mp4
+  mask_video_name: mask_h264.mp4
+  restored_h264:
+    crf: 23
+    preset: medium
+    pix_fmt: yuv420p
+  mask_h264:
+    crf: 0
+    preset: medium
+    pix_fmt: gray
+    threshold: 127
+  cleanup:
+    remove_candidate_root: true
+    remove_frame_dirs: true
+    remove_mask_dirs: true
 
 part1:
   dynamic_classes:
@@ -28,6 +69,17 @@ part1:
     - car
     - bus
     - truck
+    - bird
+    - cat
+    - dog
+    - horse
+    - sheep
+    - cow
+    - elephant
+    - bear
+    - zebra
+    - giraffe
+    - antelope
   keep_unknown_motion_as_dynamic: true
   save_mp4: false
   defaults:
@@ -88,6 +140,17 @@ part2:
       - car
       - bus
       - truck
+      - bird
+      - cat
+      - dog
+      - horse
+      - sheep
+      - cow
+      - elephant
+      - bear
+      - zebra
+      - giraffe
+      - antelope
     max_prompts: 3
   mask_post:
     refined_kernel: 5
@@ -102,7 +165,7 @@ part2:
     mean_min_ratio: 0.0001
     low_mean_fallback: phase1
   selection:
-    exclude_datasets: [wild]
+    exclude_datasets: []
   propainter:
     repo_url: https://github.com/sczhou/ProPainter.git
     balanced_profile:
@@ -150,6 +213,60 @@ part2:
     device: auto
     auto_install_missing: true
     strict_dual_run: false
+
+part3:
+  references:
+    a_best_alias: A-best
+    b_best_alias: B-best
+  selection:
+    exclude_datasets: []
+  e1:
+    grid:
+      - name: morph_identity
+        opening_kernel: 1
+        closing_kernel: 1
+        dilation_kernel: 1
+        smoothing_kernel: 0
+      - name: morph_light
+        opening_kernel: 3
+        closing_kernel: 5
+        dilation_kernel: 3
+        smoothing_kernel: 0
+      - name: morph_balanced
+        opening_kernel: 3
+        closing_kernel: 7
+        dilation_kernel: 5
+        smoothing_kernel: 3
+      - name: morph_edge_safe
+        opening_kernel: 5
+        closing_kernel: 7
+        dilation_kernel: 3
+        smoothing_kernel: 3
+  e2:
+    temporal_windows: [0, 1, 2]
+  e3:
+    sam3:
+      repo_url: https://github.com/facebookresearch/sam3.git
+      model_cfg: ""
+      checkpoint:
+        local_path: outputs/external/part3/checkpoints/sam3.pt
+        hf_repo_id: facebook/sam3
+        hf_filename: ""
+      hf_endpoint: https://huggingface.co
+      skip_datasets: [wild]
+      merge_with_input: or
+      env_name: sam3
+      auto_install: true
+      permission_required: true
+      prompt_text: ""
+      prompt_text_by_dataset:
+        bmx-trees: person riding a bicycle
+        tennis: tennis player
+      device: cuda
+  runtime:
+    device: auto
+    auto_install_missing: true
+    strict_sam3_permission: true
 
 datasets:
   mandatory:

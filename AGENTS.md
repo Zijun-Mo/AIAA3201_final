@@ -1,4 +1,4 @@
-# AGENT.md
+# AGENTS.md
 
 本文件定义本仓库（AIAA3201 Project 3: Video Object Removal & Inpainting）的统一开发规范。  
 所有人类开发者与 AI Agent 在本仓库内协作时，都应遵循本规范。
@@ -20,7 +20,7 @@
 
 ### 1.3 指标（硬约束）
 - Mask 质量：JM（IoU mean）、JR（IoU recall）。
-- 视频质量（仅在有 GT 时）：PSNR、SSIM。
+- 视频移除质量：ROS、TCF、BES、Q_REMOVE。
 - 定性结果：多方法可视化对比图与失败案例。
 
 ## 2. 技术路线优先级
@@ -41,7 +41,7 @@
 
 ```text
 .
-├── AGENT.md
+├── AGENTS.md
 ├── PLAN.md
 ├── data/
 │   ├── raw/
@@ -93,7 +93,7 @@
 
 ### 5.2 评估统一
 - JM/JR 计算逻辑在所有路线中保持一致。
-- PSNR/SSIM 仅在同一 GT 定义下横向比较。
+- 质量评估统一使用 ROS/TCF/BES，并由 Q_REMOVE 汇总。
 - 表格中的数值必须可追溯到 `outputs/metrics/` 原始文件。
 
 ### 5.3 可视化统一
@@ -147,7 +147,7 @@ AI Agent 在执行任务时必须：
 
 当本文件与临时任务要求冲突时，优先级如下：
 1. 课程硬性要求（项目 PDF）
-2. 本文件（AGENT.md）
+2. 本文件（AGENTS.md）
 3. 临时任务偏好
 
 如有不确定，先保守执行：优先可复现、可解释、可交付。

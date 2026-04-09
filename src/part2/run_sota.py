@@ -36,6 +36,14 @@ from src.part1.run_baseline import (
     str2bool,
     write_dataset_outputs,
 )
+from src.common.remove_quality import DynamicObjectDetector, compute_remove_quality
+from src.common.video_io import (
+    cleanup_named_subdirs,
+    cleanup_video_only_outputs,
+    dataset_video_paths,
+    load_masks_by_names_with_video_fallback,
+    resolve_output_policy,
+)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
@@ -627,6 +635,13 @@ def compute_mean_mask_ratio(masks_u8: list[np.ndarray]) -> float:
     return float(np.mean(np.array(ratios, dtype=np.float32)))
 
 
+def compute_active_frame_ratio(masks_u8: list[np.ndarray]) -> float:
+    if not masks_u8:
+        return 0.0
+    active = [1.0 if int((np.asarray(m) > 0).sum()) > 0 else 0.0 for m in masks_u8]
+    return float(np.mean(np.array(active, dtype=np.float32)))
+
+
 def read_mask_binary(path: Path, frame_shape: tuple[int, int]) -> np.ndarray | None:
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -641,51 +656,23 @@ def load_external_masks_by_names(
     mask_dir: Path,
     frame_names: list[str],
     frame_shape: tuple[int, int],
+    mask_video_path: Path | None = None,
+    threshold: int = 127,
 ) -> tuple[list[np.ndarray] | None, dict[str, Any]]:
-    meta: dict[str, Any] = {
-        "mask_dir": str(mask_dir),
-        "total_frames": int(len(frame_names)),
-        "loaded_frames": 0,
-        "missing_frames": 0,
-    }
-    if not mask_dir.exists():
-        meta["status"] = "mask_dir_missing"
+    masks, meta = load_masks_by_names_with_video_fallback(
+        mask_dir=mask_dir,
+        frame_names=frame_names,
+        frame_shape=frame_shape,
+        mask_video_path=mask_video_path,
+        threshold=threshold,
+    )
+    if masks is None:
+        meta["status"] = "unavailable"
         return None, meta
-
-    out: list[np.ndarray] = []
-    loaded = 0
-    missing = 0
-    for name in frame_names:
-        candidate = mask_dir / name
-        path = candidate if candidate.exists() else None
-        if path is None:
-            stem = Path(name).stem
-            for ext in [".png", ".jpg", ".jpeg"]:
-                alt = mask_dir / f"{stem}{ext}"
-                if alt.exists():
-                    path = alt
-                    break
-
-        if path is None:
-            h, w = frame_shape
-            out.append(np.zeros((h, w), dtype=np.uint8))
-            missing += 1
-            continue
-
-        mask = read_mask_binary(path=path, frame_shape=frame_shape)
-        if mask is None:
-            h, w = frame_shape
-            out.append(np.zeros((h, w), dtype=np.uint8))
-            missing += 1
-            continue
-
-        out.append(mask)
-        loaded += 1
-
-    meta["loaded_frames"] = int(loaded)
-    meta["missing_frames"] = int(missing)
-    meta["status"] = "ok" if loaded > 0 else "no_readable_masks"
-    return (out if loaded > 0 else None), meta
+    meta["status"] = "ok"
+    meta["mean_mask_ratio"] = compute_mean_mask_ratio(masks)
+    meta["active_frame_ratio"] = compute_active_frame_ratio(masks)
+    return masks, meta
 
 
 def fuse_mask_pair(
@@ -707,7 +694,7 @@ def dataset_metric_aggregate(
     per_dataset: dict[str, Any],
     datasets_for_scoring: list[str] | None,
 ) -> dict[str, float]:
-    keys = ["JM", "JR", "PSNR", "SSIM"]
+    keys = ["JM", "JR", "ROS", "TCF", "BES", "Q_REMOVE"]
     values: dict[str, list[float]] = {k: [] for k in keys}
 
     if datasets_for_scoring:
@@ -1466,8 +1453,11 @@ def ensure_unique_input_dir(
     target_root: Path,
 ) -> Path:
     input_dir = target_root / dataset_name
-    if input_dir.exists():
-        shutil.rmtree(input_dir)
+    if input_dir.is_symlink() or input_dir.exists():
+        if input_dir.is_symlink() or input_dir.is_file():
+            input_dir.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(input_dir)
 
     input_dir.parent.mkdir(parents=True, exist_ok=True)
     all_names = [p.name for p in list_images(payload.frame_dir)]
@@ -1622,6 +1612,7 @@ def run_propainter_with_fallback(
     part2_cfg: dict[str, Any],
     profile_override: dict[str, Any] | None,
     target_fps: float,
+    output_policy: dict[str, Any],
     logger: logging.Logger,
 ) -> tuple[list[np.ndarray], dict[str, Any]]:
     prop_cfg = part2_cfg.get("propainter", {}) or {}
@@ -1646,77 +1637,87 @@ def run_propainter_with_fallback(
         "raw_output_dir": None,
     }
 
-    if propainter_repo is None:
-        method = str(fallback_cfg.get("inpaint_method", "ns")).lower()
-        inpaint_method = "telea" if method == "telea" else "ns"
-        restored = restore_frames(
-            frames=payload.frames,
-            masks_u8=masks_u8,
-            inpaint_method=inpaint_method,
-            inpaint_radius=float(fallback_cfg.get("inpaint_radius", 3.0)),
-            temporal_window=int(fallback_cfg.get("temporal_window", 1)),
-        )
-        meta["status"] = "fallback_cv2"
-        meta["reason"] = "propainter_unavailable"
-        return restored, meta
+    cleanup_enabled = bool(resolve_output_policy(output_policy).get("auto_cleanup_intermediates", True))
+    try:
+        if propainter_repo is None:
+            method = str(fallback_cfg.get("inpaint_method", "ns")).lower()
+            inpaint_method = "telea" if method == "telea" else "ns"
+            restored = restore_frames(
+                frames=payload.frames,
+                masks_u8=masks_u8,
+                inpaint_method=inpaint_method,
+                inpaint_radius=float(fallback_cfg.get("inpaint_radius", 3.0)),
+                temporal_window=int(fallback_cfg.get("temporal_window", 1)),
+            )
+            meta["status"] = "fallback_cv2"
+            meta["reason"] = "propainter_unavailable"
+            return restored, meta
 
-    input_root = candidate_root / "_propainter_inputs"
-    input_dir = ensure_unique_input_dir(payload=payload, dataset_name=dataset_name, target_root=input_root)
+        input_root = candidate_root / "_propainter_inputs"
+        input_dir = ensure_unique_input_dir(payload=payload, dataset_name=dataset_name, target_root=input_root)
 
-    mask_input_dir = candidate_root / "_propainter_masks" / dataset_name
-    save_masks(mask_input_dir, payload.frame_names, masks_u8)
+        mask_input_dir = candidate_root / "_propainter_masks" / dataset_name
+        save_masks(mask_input_dir, payload.frame_names, masks_u8)
 
-    raw_out_root = candidate_root / "_propainter_raw"
-    ok, reason, frames, raw_dir = run_propainter_once(
-        repo_path=propainter_repo,
-        input_frame_dir=input_dir,
-        input_mask_dir=mask_input_dir,
-        output_root=raw_out_root,
-        profile=base_profile,
-        target_fps=target_fps,
-        logger=logger,
-    )
-    meta["raw_output_dir"] = str(raw_dir) if raw_dir else None
-    meta["reason"] = reason
-
-    if ok:
-        meta["status"] = "ok"
-        return frames, meta
-
-    if reason == "oom":
-        meta["fallback_profile"] = degraded_profile
-        ok2, reason2, frames2, raw_dir2 = run_propainter_once(
+        raw_out_root = candidate_root / "_propainter_raw"
+        ok, reason, frames, raw_dir = run_propainter_once(
             repo_path=propainter_repo,
             input_frame_dir=input_dir,
             input_mask_dir=mask_input_dir,
             output_root=raw_out_root,
-            profile=degraded_profile,
+            profile=base_profile,
             target_fps=target_fps,
             logger=logger,
         )
-        meta["raw_output_dir"] = str(raw_dir2) if raw_dir2 else meta["raw_output_dir"]
-        meta["reason"] = reason2
-        if ok2:
-            meta["status"] = "ok_fallback_profile"
-            meta["profile"] = degraded_profile
-            return frames2, meta
+        meta["raw_output_dir"] = str(raw_dir) if raw_dir else None
+        meta["reason"] = reason
 
-    if bool(fallback_cfg.get("enable_cv2_inpaint_fallback", True)):
-        method = str(fallback_cfg.get("inpaint_method", "ns")).lower()
-        inpaint_method = "telea" if method == "telea" else "ns"
-        restored = restore_frames(
-            frames=payload.frames,
-            masks_u8=masks_u8,
-            inpaint_method=inpaint_method,
-            inpaint_radius=float(fallback_cfg.get("inpaint_radius", 3.0)),
-            temporal_window=int(fallback_cfg.get("temporal_window", 1)),
+        if ok:
+            meta["status"] = "ok"
+            return frames, meta
+
+        if reason == "oom":
+            meta["fallback_profile"] = degraded_profile
+            ok2, reason2, frames2, raw_dir2 = run_propainter_once(
+                repo_path=propainter_repo,
+                input_frame_dir=input_dir,
+                input_mask_dir=mask_input_dir,
+                output_root=raw_out_root,
+                profile=degraded_profile,
+                target_fps=target_fps,
+                logger=logger,
+            )
+            meta["raw_output_dir"] = str(raw_dir2) if raw_dir2 else meta["raw_output_dir"]
+            meta["reason"] = reason2
+            if ok2:
+                meta["status"] = "ok_fallback_profile"
+                meta["profile"] = degraded_profile
+                return frames2, meta
+
+        if bool(fallback_cfg.get("enable_cv2_inpaint_fallback", True)):
+            method = str(fallback_cfg.get("inpaint_method", "ns")).lower()
+            inpaint_method = "telea" if method == "telea" else "ns"
+            restored = restore_frames(
+                frames=payload.frames,
+                masks_u8=masks_u8,
+                inpaint_method=inpaint_method,
+                inpaint_radius=float(fallback_cfg.get("inpaint_radius", 3.0)),
+                temporal_window=int(fallback_cfg.get("temporal_window", 1)),
+            )
+            meta["status"] = "fallback_cv2"
+            return restored, meta
+
+        raise CandidateExecutionError(
+            f"ProPainter failed for dataset={dataset_name}, reason={meta.get('reason')}"
         )
-        meta["status"] = "fallback_cv2"
-        return restored, meta
-
-    raise CandidateExecutionError(
-        f"ProPainter failed for dataset={dataset_name}, reason={meta.get('reason')}"
-    )
+    finally:
+        if cleanup_enabled:
+            removed = cleanup_named_subdirs(
+                candidate_root,
+                ["_propainter_inputs", "_propainter_masks", "_propainter_raw"],
+            )
+            if removed:
+                meta["cleanup_removed_paths"] = removed
 
 
 def maybe_fuse_with_phase1_prior(
@@ -1727,6 +1728,7 @@ def maybe_fuse_with_phase1_prior(
     backend_masks: list[np.ndarray],
     part2_cfg: dict[str, Any],
     phase1_exp_id: str,
+    output_policy: dict[str, Any],
 ) -> tuple[list[np.ndarray], dict[str, Any]]:
     fusion_cfg = part2_cfg.get("mask_fusion", {}) or {}
     enabled = bool(fusion_cfg.get("enable_phase1_prior", False))
@@ -1751,14 +1753,20 @@ def maybe_fuse_with_phase1_prior(
         meta["reason"] = "phase1_exp_id_missing"
         return backend_masks, meta
 
-    phase1_mask_dir = REPO_ROOT / "outputs" / "videos" / exp_token / dataset_name / "masks"
+    phase1_dataset_root = REPO_ROOT / "outputs" / "videos" / exp_token / dataset_name
+    phase1_mask_dir = phase1_dataset_root / "masks"
+    _, phase1_mask_video = dataset_video_paths(phase1_dataset_root, output_policy)
+    mask_threshold = int(((output_policy.get("mask_h264", {}) or {}).get("threshold", 127)))
     prior_masks, load_meta = load_external_masks_by_names(
         mask_dir=phase1_mask_dir,
         frame_names=frame_names,
         frame_shape=frame_shape,
+        mask_video_path=phase1_mask_video,
+        threshold=mask_threshold,
     )
     meta["phase1_exp_id"] = exp_token
     meta["phase1_mask_dir"] = str(phase1_mask_dir)
+    meta["phase1_mask_video"] = str(phase1_mask_video)
     meta["load_meta"] = load_meta
 
     if prior_masks is None:
@@ -1880,26 +1888,101 @@ def metric_or_neg_inf(agg: dict[str, Any], key: str) -> float:
     return float(value)
 
 
-def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float, float]:
+def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float]:
     jm = metric_or_neg_inf(agg, "JM")
     jr = metric_or_neg_inf(agg, "JR")
-    psnr = metric_or_neg_inf(agg, "PSNR")
-    ssim = metric_or_neg_inf(agg, "SSIM")
+    q_remove = metric_or_neg_inf(agg, "Q_REMOVE")
 
     if stage in {"B1", "B3"}:
-        return (jm, jr, psnr, ssim, -abs(mean_mask_ratio - 0.1))
-    return (psnr, ssim, jm, jr, -abs(mean_mask_ratio - 0.1))
+        return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
+    return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
+
+
+def parse_selection_coverage_constraints(selection_cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
+    mean_cfg = selection_cfg.get("min_mean_mask_ratio_by_dataset", {}) or {}
+    active_cfg = selection_cfg.get("min_active_frame_ratio_by_dataset", {}) or {}
+    constraints: dict[str, dict[str, float]] = {}
+
+    if not isinstance(mean_cfg, dict):
+        mean_cfg = {}
+    if not isinstance(active_cfg, dict):
+        active_cfg = {}
+
+    for ds in sorted(set([str(k).strip() for k in mean_cfg.keys()] + [str(k).strip() for k in active_cfg.keys()])):
+        if not ds:
+            continue
+        req: dict[str, float] = {}
+        if ds in mean_cfg:
+            req["min_mean_mask_ratio"] = float(mean_cfg.get(ds, 0.0))
+        if ds in active_cfg:
+            req["min_active_frame_ratio"] = float(active_cfg.get(ds, 0.0))
+        constraints[ds] = req
+    return constraints
+
+
+def candidate_meets_coverage_constraints(
+    entry: CandidateResult,
+    coverage_constraints: dict[str, dict[str, float]],
+    score_datasets: list[str] | None = None,
+) -> bool:
+    if not coverage_constraints:
+        return True
+    for ds, req in coverage_constraints.items():
+        if score_datasets and ds not in score_datasets:
+            continue
+        ds_stats = entry.mask_stats.get(ds, {}) or {}
+        if not ds_stats:
+            continue
+        mean_ratio = float(ds_stats.get("mean_mask_ratio", 0.0))
+        active_ratio = float(
+            ds_stats.get(
+                "active_frame_ratio",
+                1.0 if mean_ratio > 0.0 else 0.0,
+            )
+        )
+        if "min_mean_mask_ratio" in req and mean_ratio < float(req["min_mean_mask_ratio"]):
+            return False
+        if "min_active_frame_ratio" in req and active_ratio < float(req["min_active_frame_ratio"]):
+            return False
+    return True
 
 
 def select_best(
     stage: str,
     entries: list[CandidateResult],
     score_datasets: list[str] | None = None,
+    coverage_constraints: dict[str, dict[str, float]] | None = None,
+    enforce_if_candidate_available: bool = True,
+    logger: logging.Logger | None = None,
 ) -> CandidateResult:
     if not entries:
         raise ValueError(f"No candidate results to select from in stage {stage}")
 
-    def score(entry: CandidateResult) -> tuple[float, float, float, float, float]:
+    pool = entries
+    constraints = coverage_constraints or {}
+    if constraints:
+        eligible = [
+            e
+            for e in entries
+            if candidate_meets_coverage_constraints(
+                e,
+                coverage_constraints=constraints,
+                score_datasets=score_datasets,
+            )
+        ]
+        if eligible:
+            pool = eligible
+        elif enforce_if_candidate_available:
+            if logger is not None:
+                logger.warning(
+                    "[%s] No candidate met coverage constraints=%s, fallback to all candidates.",
+                    stage,
+                    constraints,
+                )
+        else:
+            raise ValueError(f"No candidate meets coverage constraints in stage {stage}: {constraints}")
+
+    def score(entry: CandidateResult) -> tuple[float, float, float, float]:
         if score_datasets:
             ratios = [
                 (entry.mask_stats.get(ds, {}) or {}).get("mean_mask_ratio", 0.0) for ds in score_datasets
@@ -1910,7 +1993,7 @@ def select_best(
         agg = dataset_metric_aggregate(per_dataset=entry.per_dataset, datasets_for_scoring=score_datasets)
         return stage_score(stage, agg, mean_ratio)
 
-    return max(entries, key=score)
+    return max(pool, key=score)
 
 
 def copy_b_best(best_candidate_root: Path, final_root: Path, datasets: list[str]) -> None:
@@ -1926,9 +2009,9 @@ def copy_b_best(best_candidate_root: Path, final_root: Path, datasets: list[str]
 
 def classify_failure_case(
     dataset: str,
-    psnr: float,
-    edge_diff: float,
-    texture_ratio: float,
+    ros: float,
+    tcf: float,
+    bes: float,
     backend_fallback: bool,
     propainter_fallback: bool,
 ) -> str:
@@ -1936,13 +2019,15 @@ def classify_failure_case(
         return "mask_backend_fallback"
     if propainter_fallback:
         return "propainter_profile_fallback"
-    if psnr < 24.0 and edge_diff > 0.06:
-        return "boundary_residue"
-    if psnr < 24.0 and texture_ratio < 0.75:
-        return "texture_loss"
+    if ros > 0.05:
+        return "residual_object"
+    if tcf > 0.12:
+        return "temporal_flicker"
+    if bes > 0.15:
+        return "boundary_artifact"
     if dataset == "wild":
         return "wild_domain_gap_suspected"
-    return "temporal_flicker_suspected"
+    return "minor_artifact"
 
 
 def build_failure_case_index(
@@ -1950,6 +2035,12 @@ def build_failure_case_index(
     gt_root: Path,
     datasets: list[str],
     out_dir: Path,
+    detector: DynamicObjectDetector,
+    quality_weights: dict[str, float],
+    tcf_dilate_kernel: int,
+    bes_dilate_kernel: int,
+    bes_erode_kernel: int,
+    bes_sobel_ksize: int,
     backend_meta: dict[str, dict[str, Any]],
     propainter_meta: dict[str, dict[str, Any]],
     top_k: int = 3,
@@ -1960,55 +2051,64 @@ def build_failure_case_index(
 
     for ds in datasets:
         pred_dir = pred_root / ds / "frames"
-        gt_dir = gt_root / ds / "frames"
+        mask_dir = pred_root / ds / "masks"
         pred_paths = list_images(pred_dir)
-        gt_map = {p.name: p for p in list_images(gt_dir)}
-        if not pred_paths or not gt_map:
+        mask_map = {p.name: p for p in list_images(mask_dir)}
+        if not pred_paths:
             continue
 
-        scores: list[tuple[float, Path, Path]] = []
+        frames: list[np.ndarray] = []
+        masks: list[np.ndarray] = []
+        frame_names: list[str] = []
         for p in pred_paths:
-            g = gt_map.get(p.name)
-            if g is None:
-                continue
             pi = cv2.imread(str(p), cv2.IMREAD_COLOR)
-            gi = cv2.imread(str(g), cv2.IMREAD_COLOR)
-            if pi is None or gi is None:
+            if pi is None:
                 continue
-            if pi.shape != gi.shape:
-                gi = cv2.resize(gi, (pi.shape[1], pi.shape[0]), interpolation=cv2.INTER_LINEAR)
-            psnr = float(cv2.PSNR(pi, gi))
-            scores.append((psnr, p, g))
+            mp = mask_map.get(p.name)
+            if mp is None:
+                pm = np.zeros(pi.shape[:2], dtype=np.uint8)
+            else:
+                pm = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
+                if pm is None:
+                    pm = np.zeros(pi.shape[:2], dtype=np.uint8)
+                elif pm.shape != pi.shape[:2]:
+                    pm = cv2.resize(pm, (pi.shape[1], pi.shape[0]), interpolation=cv2.INTER_NEAREST)
+            frames.append(pi)
+            masks.append(pm)
+            frame_names.append(p.name)
 
-        if not scores:
+        if not frames:
             continue
 
-        scores.sort(key=lambda x: x[0])
-        chosen = scores[: max(1, top_k)]
-        for rank, (psnr, p, g) in enumerate(chosen, start=1):
-            pi = cv2.imread(str(p), cv2.IMREAD_COLOR)
-            gi = cv2.imread(str(g), cv2.IMREAD_COLOR)
-            if pi is None or gi is None:
-                continue
-            if pi.shape != gi.shape:
-                gi = cv2.resize(gi, (pi.shape[1], pi.shape[0]), interpolation=cv2.INTER_LINEAR)
-
-            diff = cv2.absdiff(pi, gi)
-            edge_p = cv2.Canny(pi, 80, 160)
-            edge_g = cv2.Canny(gi, 80, 160)
-            edge_diff = float(np.mean(np.abs(edge_p.astype(np.float32) - edge_g.astype(np.float32))) / 255.0)
-            texture_ratio = float(diff.std() / (gi.std() + 1e-6))
-
-            panel = np.concatenate([pi, gi, diff], axis=1)
-            out_img = out_dir / f"{ds}_{p.stem}_rank{rank}_psnr{psnr:.2f}.png"
-            cv2.imwrite(str(out_img), panel)
+        _, per_frame_metrics, _ = compute_remove_quality(
+            frames_bgr=frames,
+            masks_u8=masks,
+            detector=detector,
+            quality_weights=quality_weights,
+            tcf_dilate_kernel=tcf_dilate_kernel,
+            bes_dilate_kernel=bes_dilate_kernel,
+            bes_erode_kernel=bes_erode_kernel,
+            bes_sobel_ksize=bes_sobel_ksize,
+        )
+        chosen = sorted(
+            [(float(m.get("Q_REMOVE", 1.0)), idx) for idx, m in enumerate(per_frame_metrics)],
+            key=lambda x: x[0],
+        )[: max(1, top_k)]
+        for rank, (q_remove, idx) in enumerate(chosen, start=1):
+            frame = frames[idx]
+            frame_name = frame_names[idx]
+            out_img = out_dir / f"{ds}_{Path(frame_name).stem}_rank{rank}_qremove{q_remove:.4f}.png"
+            cv2.imwrite(str(out_img), frame)
+            ros = float(per_frame_metrics[idx].get("ROS", 0.0))
+            tcf = float(per_frame_metrics[idx].get("TCF", 0.0))
+            bes = float(per_frame_metrics[idx].get("BES", 0.0))
 
             rows.append(
                 {
                     "dataset": ds,
-                    "frame": p.name,
+                    "frame": frame_name,
                     "rank": rank,
-                    "psnr": psnr,
+                    "q_remove": q_remove,
                     "compare_image": str(out_img),
                 }
             )
@@ -2017,9 +2117,9 @@ def build_failure_case_index(
             p_meta = propainter_meta.get(ds, {})
             explanation = classify_failure_case(
                 dataset=ds,
-                psnr=psnr,
-                edge_diff=edge_diff,
-                texture_ratio=texture_ratio,
+                ros=ros,
+                tcf=tcf,
+                bes=bes,
                 backend_fallback=bool(b_meta.get("fallback_used", False)),
                 propainter_fallback=str(p_meta.get("status", "")).startswith("ok_fallback")
                 or str(p_meta.get("status", "")) == "fallback_cv2",
@@ -2027,11 +2127,12 @@ def build_failure_case_index(
             rows_explained.append(
                 {
                     "dataset": ds,
-                    "frame": p.name,
+                    "frame": frame_name,
                     "rank": rank,
-                    "psnr": psnr,
-                    "edge_diff": edge_diff,
-                    "texture_ratio": texture_ratio,
+                    "q_remove": q_remove,
+                    "ros": ros,
+                    "tcf": tcf,
+                    "bes": bes,
                     "explanation": explanation,
                     "compare_image": str(out_img),
                 }
@@ -2039,7 +2140,7 @@ def build_failure_case_index(
 
     csv_path = out_dir / "failure_cases.csv"
     with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["dataset", "frame", "rank", "psnr", "compare_image"])
+        writer = csv.DictWriter(f, fieldnames=["dataset", "frame", "rank", "q_remove", "compare_image"])
         writer.writeheader()
         writer.writerows(rows)
 
@@ -2051,9 +2152,10 @@ def build_failure_case_index(
                 "dataset",
                 "frame",
                 "rank",
-                "psnr",
-                "edge_diff",
-                "texture_ratio",
+                "q_remove",
+                "ros",
+                "tcf",
+                "bes",
                 "explanation",
                 "compare_image",
             ],
@@ -2076,6 +2178,11 @@ def write_ablation_outputs(
     for r in all_results:
         ratios = [v.get("mean_mask_ratio", 0.0) for v in r.mask_stats.values()]
         mean_ratio = float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
+        active_ratios = [
+            v.get("active_frame_ratio", 1.0 if float(v.get("mean_mask_ratio", 0.0)) > 0 else 0.0)
+            for v in r.mask_stats.values()
+        ]
+        active_ratio = float(np.mean(np.array(active_ratios, dtype=np.float32))) if active_ratios else 0.0
         rows.append(
             {
                 "stage": r.spec.stage,
@@ -2090,9 +2197,12 @@ def write_ablation_outputs(
                 "fp16": int(r.spec.fp16),
                 "JM": r.aggregate.get("JM"),
                 "JR": r.aggregate.get("JR"),
-                "PSNR": r.aggregate.get("PSNR"),
-                "SSIM": r.aggregate.get("SSIM"),
+                "ROS": r.aggregate.get("ROS"),
+                "TCF": r.aggregate.get("TCF"),
+                "BES": r.aggregate.get("BES"),
+                "Q_REMOVE": r.aggregate.get("Q_REMOVE"),
                 "mean_mask_ratio": mean_ratio,
+                "active_frame_ratio": active_ratio,
                 "pred_root": str(r.candidate_root),
                 "eval_exp_id": r.eval_exp_id,
                 "is_stage_best": int(stage_best_map.get(r.spec.stage) is r),
@@ -2117,9 +2227,12 @@ def write_ablation_outputs(
                 "fp16",
                 "JM",
                 "JR",
-                "PSNR",
-                "SSIM",
+                "ROS",
+                "TCF",
+                "BES",
+                "Q_REMOVE",
                 "mean_mask_ratio",
+                "active_frame_ratio",
                 "pred_root",
                 "eval_exp_id",
                 "is_stage_best",
@@ -2166,16 +2279,20 @@ def write_a_vs_b_comparison(
             "A_JR": am.get("JR"),
             "B_JR": bm.get("JR"),
             "delta_JR": None if am.get("JR") is None or bm.get("JR") is None else float(bm.get("JR")) - float(am.get("JR")),
-            "A_PSNR": am.get("PSNR"),
-            "B_PSNR": bm.get("PSNR"),
-            "delta_PSNR": None
-            if am.get("PSNR") is None or bm.get("PSNR") is None
-            else float(bm.get("PSNR")) - float(am.get("PSNR")),
-            "A_SSIM": am.get("SSIM"),
-            "B_SSIM": bm.get("SSIM"),
-            "delta_SSIM": None
-            if am.get("SSIM") is None or bm.get("SSIM") is None
-            else float(bm.get("SSIM")) - float(am.get("SSIM")),
+            "A_ROS": am.get("ROS"),
+            "B_ROS": bm.get("ROS"),
+            "delta_ROS": None if am.get("ROS") is None or bm.get("ROS") is None else float(bm.get("ROS")) - float(am.get("ROS")),
+            "A_TCF": am.get("TCF"),
+            "B_TCF": bm.get("TCF"),
+            "delta_TCF": None if am.get("TCF") is None or bm.get("TCF") is None else float(bm.get("TCF")) - float(am.get("TCF")),
+            "A_BES": am.get("BES"),
+            "B_BES": bm.get("BES"),
+            "delta_BES": None if am.get("BES") is None or bm.get("BES") is None else float(bm.get("BES")) - float(am.get("BES")),
+            "A_Q_REMOVE": am.get("Q_REMOVE"),
+            "B_Q_REMOVE": bm.get("Q_REMOVE"),
+            "delta_Q_REMOVE": None
+            if am.get("Q_REMOVE") is None or bm.get("Q_REMOVE") is None
+            else float(bm.get("Q_REMOVE")) - float(am.get("Q_REMOVE")),
         }
         rows.append(row)
 
@@ -2190,16 +2307,20 @@ def write_a_vs_b_comparison(
             "A_JR": a_agg.get("JR"),
             "B_JR": b_agg.get("JR"),
             "delta_JR": None if a_agg.get("JR") is None or b_agg.get("JR") is None else float(b_agg.get("JR")) - float(a_agg.get("JR")),
-            "A_PSNR": a_agg.get("PSNR"),
-            "B_PSNR": b_agg.get("PSNR"),
-            "delta_PSNR": None
-            if a_agg.get("PSNR") is None or b_agg.get("PSNR") is None
-            else float(b_agg.get("PSNR")) - float(a_agg.get("PSNR")),
-            "A_SSIM": a_agg.get("SSIM"),
-            "B_SSIM": b_agg.get("SSIM"),
-            "delta_SSIM": None
-            if a_agg.get("SSIM") is None or b_agg.get("SSIM") is None
-            else float(b_agg.get("SSIM")) - float(a_agg.get("SSIM")),
+            "A_ROS": a_agg.get("ROS"),
+            "B_ROS": b_agg.get("ROS"),
+            "delta_ROS": None if a_agg.get("ROS") is None or b_agg.get("ROS") is None else float(b_agg.get("ROS")) - float(a_agg.get("ROS")),
+            "A_TCF": a_agg.get("TCF"),
+            "B_TCF": b_agg.get("TCF"),
+            "delta_TCF": None if a_agg.get("TCF") is None or b_agg.get("TCF") is None else float(b_agg.get("TCF")) - float(a_agg.get("TCF")),
+            "A_BES": a_agg.get("BES"),
+            "B_BES": b_agg.get("BES"),
+            "delta_BES": None if a_agg.get("BES") is None or b_agg.get("BES") is None else float(b_agg.get("BES")) - float(a_agg.get("BES")),
+            "A_Q_REMOVE": a_agg.get("Q_REMOVE"),
+            "B_Q_REMOVE": b_agg.get("Q_REMOVE"),
+            "delta_Q_REMOVE": None
+            if a_agg.get("Q_REMOVE") is None or b_agg.get("Q_REMOVE") is None
+            else float(b_agg.get("Q_REMOVE")) - float(a_agg.get("Q_REMOVE")),
         }
     )
 
@@ -2215,12 +2336,18 @@ def write_a_vs_b_comparison(
                 "A_JR",
                 "B_JR",
                 "delta_JR",
-                "A_PSNR",
-                "B_PSNR",
-                "delta_PSNR",
-                "A_SSIM",
-                "B_SSIM",
-                "delta_SSIM",
+                "A_ROS",
+                "B_ROS",
+                "delta_ROS",
+                "A_TCF",
+                "B_TCF",
+                "delta_TCF",
+                "A_BES",
+                "B_BES",
+                "delta_BES",
+                "A_Q_REMOVE",
+                "B_Q_REMOVE",
+                "delta_Q_REMOVE",
             ],
         )
         writer.writeheader()
@@ -2247,10 +2374,10 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
-    lines.append("| JM | JR | PSNR | SSIM |")
-    lines.append("| ---: | ---: | ---: | ---: |")
+    lines.append("| JM | JR | ROS | TCF | BES | Q_REMOVE |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: |")
     lines.append(
-        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('PSNR')} | {aggregate.get('SSIM')} |"
+        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} | {aggregate.get('Q_REMOVE')} |"
     )
     lines.append("")
 
@@ -2278,12 +2405,12 @@ def write_acceptance_report(
 
     lines.append("## Per-Dataset Metrics")
     lines.append("")
-    lines.append("| Dataset | JM | JR | PSNR | SSIM |")
-    lines.append("| --- | ---: | ---: | ---: | ---: |")
+    lines.append("| Dataset | JM | JR | ROS | TCF | BES | Q_REMOVE |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     for ds_name, ds_payload in per_dataset.items():
         metrics = ds_payload.get("metrics", {}) if isinstance(ds_payload, dict) else {}
         lines.append(
-            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('PSNR')} | {metrics.get('SSIM')} |"
+            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} | {metrics.get('Q_REMOVE')} |"
         )
     lines.append("")
 
@@ -2344,6 +2471,7 @@ def run_candidate(
     phase1_exp_id: str,
     propainter_repo: Path | None,
     target_fps: float,
+    output_policy: dict[str, Any],
     logger: logging.Logger,
 ) -> tuple[Path, dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     candidate_root = out_root / spec.stage / spec.candidate_id
@@ -2412,12 +2540,15 @@ def run_candidate(
             backend_masks=masks_u8,
             part2_cfg=part2_cfg,
             phase1_exp_id=phase1_exp_id,
+            output_policy=output_policy,
         )
         backend_meta["phase1_mask_fusion"] = fusion_meta
 
         mask_ratio = compute_mean_mask_ratio(masks_u8)
+        active_ratio = compute_active_frame_ratio(masks_u8)
         mask_stats_map[ds] = {
             "mean_mask_ratio": mask_ratio,
+            "active_frame_ratio": active_ratio,
             "frame_count": len(masks_u8),
         }
 
@@ -2438,6 +2569,7 @@ def run_candidate(
                 "fp16": spec.fp16,
             },
             target_fps=target_fps,
+            output_policy=output_policy,
             logger=logger,
         )
 
@@ -2460,6 +2592,7 @@ def run_candidate(
             masks_u8=masks_u8[:n],
             target_fps=target_fps,
             save_mp4=bool(part2_cfg.get("save_mp4", False)),
+            output_policy=output_policy,
         )
 
         backend_meta_map[ds] = backend_meta
@@ -2498,6 +2631,7 @@ def main() -> None:
     config = read_yaml(config_path)
     part1_cfg = config.get("part1", {}) or {}
     part2_cfg = config.get("part2", {}) or {}
+    output_policy = resolve_output_policy(config)
     default_phase1_exp = str(part2_cfg.get("phase1_reference_exp_id", "phase1_fix_acceptance_20260323"))
     phase1_exp_id = args.phase1_exp_id or default_phase1_exp
 
@@ -2536,6 +2670,12 @@ def main() -> None:
 
     device = resolve_device(runtime_cfg=runtime_cfg, logger=logger)
     logger.info("Device: %s", device)
+    logger.info(
+        "Output policy: video_only=%s write_h264_videos=%s auto_cleanup_intermediates=%s",
+        bool(output_policy.get("video_only", True)),
+        bool(output_policy.get("write_h264_videos", True)),
+        bool(output_policy.get("auto_cleanup_intermediates", True)),
+    )
 
     default_prompt_detector = str((part2_cfg.get("prompt", {}) or {}).get("detector", "yolo"))
     prompt_detector = parse_prompt_detector(args.prompt_detector or default_prompt_detector)
@@ -2571,8 +2711,26 @@ def main() -> None:
     gt_root = resolve_repo_path(Path(config.get("paths", {}).get("gt_data_dir", "data/gt")))
 
     eval_cfg = config.get("evaluation", {}) or {}
+    eval_selection_cfg = eval_cfg.get("selection", {}) or {}
+    selection_coverage_constraints = parse_selection_coverage_constraints(eval_selection_cfg)
+    enforce_selection_coverage = bool(eval_selection_cfg.get("enforce_if_candidate_available", True))
     allow_missing_gt = bool(eval_cfg.get("allow_missing_gt", True))
     save_visualization = bool(eval_cfg.get("save_visualization", True))
+    quality_weights_cfg = eval_cfg.get("quality_weights", {}) or {}
+    quality_weights = {
+        "ros": float(quality_weights_cfg.get("ros", 0.5)),
+        "tcf": float(quality_weights_cfg.get("tcf", 0.3)),
+        "bes": float(quality_weights_cfg.get("bes", 0.2)),
+    }
+    ros_cfg = eval_cfg.get("ros", {}) or {}
+    tcf_cfg = eval_cfg.get("tcf", {}) or {}
+    bes_cfg = eval_cfg.get("bes", {}) or {}
+    if selection_coverage_constraints:
+        logger.info(
+            "Selection coverage constraints=%s enforce_if_candidate_available=%s",
+            selection_coverage_constraints,
+            str(enforce_selection_coverage).lower(),
+        )
 
     pred_root_base = resolve_repo_path(Path(args.pred_root))
     exp_pred_root = pred_root_base / exp_id
@@ -2583,9 +2741,36 @@ def main() -> None:
         x.strip().lower()
         for x in (part2_cfg.get("prompt", {}) or {}).get(
             "dynamic_classes",
-            ["person", "bicycle", "motorcycle", "car", "bus", "truck"],
+            [
+                "person",
+                "bicycle",
+                "motorcycle",
+                "car",
+                "bus",
+                "truck",
+                "bird",
+                "cat",
+                "dog",
+                "horse",
+                "sheep",
+                "cow",
+                "elephant",
+                "bear",
+                "zebra",
+                "giraffe",
+            ],
         )
         if str(x).strip()
+    )
+    seg_cfg = part1_cfg.get("segmentation", {}) or {}
+    detector = DynamicObjectDetector(
+        backend_priority=[str(x).strip().lower() for x in (ros_cfg.get("backend_priority", ["yolo", "maskrcnn"]) or []) if str(x).strip()],
+        dynamic_classes=dynamic_classes,
+        yolo_model=str(seg_cfg.get("yolo_model", "yolov8n-seg.pt")),
+        yolo_conf=float(seg_cfg.get("yolo_conf_threshold", 0.25)),
+        yolo_imgsz=int(seg_cfg.get("yolo_imgsz", 960)),
+        maskrcnn_conf=float(seg_cfg.get("maskrcnn_conf_threshold", 0.5)),
+        device=device,
     )
 
     max_frames = int(args.max_frames) if args.max_frames is not None and int(args.max_frames) > 0 else None
@@ -2679,6 +2864,7 @@ def main() -> None:
                     phase1_exp_id=phase1_exp_id,
                     propainter_repo=propainter_repo,
                     target_fps=target_fps,
+                    output_policy=output_policy,
                     logger=logger,
                 )
             except Exception as e:
@@ -2719,13 +2905,15 @@ def main() -> None:
             all_results.append(result)
 
             logger.info(
-                "[%s] candidate=%s -> JM=%.4f JR=%.4f PSNR=%.4f SSIM=%.4f",
+                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f Q_REMOVE=%.4f",
                 stage,
                 spec.name,
                 metric_or_neg_inf(result.aggregate, "JM"),
                 metric_or_neg_inf(result.aggregate, "JR"),
-                metric_or_neg_inf(result.aggregate, "PSNR"),
-                metric_or_neg_inf(result.aggregate, "SSIM"),
+                metric_or_neg_inf(result.aggregate, "ROS"),
+                metric_or_neg_inf(result.aggregate, "TCF"),
+                metric_or_neg_inf(result.aggregate, "BES"),
+                metric_or_neg_inf(result.aggregate, "Q_REMOVE"),
             )
 
         if not stage_results:
@@ -2739,7 +2927,14 @@ def main() -> None:
                     f"strict_dual_run=true but B1 missing backend runs. required={required}, seen={seen_backends}"
                 )
 
-        best = select_best(stage, stage_results, score_datasets=stage_score_datasets)
+        best = select_best(
+            stage,
+            stage_results,
+            score_datasets=stage_score_datasets,
+            coverage_constraints=selection_coverage_constraints,
+            enforce_if_candidate_available=enforce_selection_coverage,
+            logger=logger,
+        )
         stage_best_map[stage] = best
         logger.info("[%s] best candidate=%s", stage, best.spec.name)
         return best
@@ -2906,6 +3101,12 @@ def main() -> None:
         gt_root=gt_root,
         datasets=final_datasets,
         out_dir=figures_dir / "failure_cases",
+        detector=detector,
+        quality_weights=quality_weights,
+        tcf_dilate_kernel=int(tcf_cfg.get("dilate_kernel", 5)),
+        bes_dilate_kernel=int(bes_cfg.get("dilate_kernel", 5)),
+        bes_erode_kernel=int(bes_cfg.get("erode_kernel", 3)),
+        bes_sobel_ksize=int(bes_cfg.get("sobel_ksize", 3)),
         backend_meta=final_best.backend_meta,
         propainter_meta=final_best.propainter_meta,
         top_k=3,
@@ -2944,6 +3145,7 @@ def main() -> None:
             "device": device,
             "auto_install_missing": auto_install_missing,
             "strict_dual_run": strict_dual_run,
+            "output_policy": output_policy,
             "mask_backends": mask_backends,
             "prompt_detector": prompt_detector,
             "prompt_meta": prompt_meta,
@@ -2962,6 +3164,13 @@ def main() -> None:
             "final_best": asdict(final_best.spec),
         },
     )
+
+    cleanup_stats = cleanup_video_only_outputs(
+        exp_pred_root=exp_pred_root,
+        datasets=final_datasets,
+        output_policy=output_policy,
+    )
+    logger.info("Video-only cleanup stats: %s", cleanup_stats)
 
     logger.info("B-best summary: %s", final_summary_path)
     logger.info("Phase2 ablation csv: %s", ablation_csv)

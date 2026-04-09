@@ -41,8 +41,10 @@
 ## Results (if available)
 - JM:
 - JR:
-- PSNR:
-- SSIM:
+- ROS:
+- TCF:
+- BES:
+- Q_REMOVE:
 
 ## Qualitative Findings
 - Boundary artifacts:

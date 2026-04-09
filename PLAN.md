@@ -15,7 +15,7 @@
 ### 0.2 成功标准（Definition of Done）
 - 代码可复现跑通（含 README 指令）。
 - mandatory 数据集（Wild / bmx-trees / tennis）都有输出视频。
-- 指标完整：JM、JR、PSNR、SSIM（有 GT 的实验）。
+- 指标完整：JM、JR、ROS、TCF、BES、Q_REMOVE。
 - 有可用于论文的表格和图（含 failure cases）。
 - 有一条明确的结论链：`A-best -> B-best -> (B+E / B+F / G)`。
 
@@ -31,7 +31,7 @@
 ### 任务
 - 数据集整理：Wild、bmx-trees、tennis、可选 DAVIS。
 - 统一预处理：分辨率、fps、帧命名、mask 格式。  
-- 统一评价协议：JM/JR、PSNR/SSIM、可视化样式。
+- 统一评价协议：JM/JR + ROS/TCF/BES/Q_REMOVE、可视化样式。
 - 建立实验记录模板。
 
 ### 输出
@@ -109,7 +109,7 @@
 | E1 | mask 后处理 | opening/closing/dilation/smoothing | 0.25-0.5 天 | 降低边界毛刺 |
 | E2 | temporal smoothing | 融合窗口大小 | 0.5 天 | 减少 flicker |
 | E3 | 更强 refiner | SAM3/其他 | 0.5-1 天 | 提升边界精度 |
-| E4 | 增益验证 | IoU/PSNR/SSIM | 0.25 天 | 给出量化提升 |
+| E4 | 增益验证 | JM/JR/Q_REMOVE | 0.25 天 | 给出量化提升 |
 
 ### 输出
 - `B vs B+E` 对比图与增益表。
@@ -199,7 +199,7 @@
 ## 4. 结果表与图（建议最终最少产出）
 
 ## 表 1：总体性能主表（必须）
-| Method | Mask Source | Inpainting | JM↑ | JR↑ | PSNR↑ | SSIM↑ |
+| Method | Mask Source | Inpainting | JM↑ | JR↑ | Q_REMOVE↑ |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | A-best | YOLO+Flow | OpenCV |  |  |  |  |
 | B-best | SAM2/TA | ProPainter |  |  |  |  |
@@ -208,11 +208,11 @@
 | G | refined mask | Diffusion |  |  |  |  |
 
 ## 表 2：A 路线消融（建议）
-| Setting | Dynamic Filter | Dilation | Inpaint Algo | PSNR | SSIM |
+| Setting | Dynamic Filter | Dilation | Inpaint Algo | ROS | TCF | BES | Q_REMOVE |
 | --- | --- | --- | --- | ---: | ---: |
 
 ## 表 3：B/E/F 消融（建议）
-| Setting | Temporal Smoothing | Motion Prior | Refinement | JM | JR | PSNR |
+| Setting | Temporal Smoothing | Motion Prior | Refinement | JM | JR | Q_REMOVE |
 | --- | --- | --- | --- | ---: | ---: | ---: |
 
 ## 表 4：成本分析（建议）

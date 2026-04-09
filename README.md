@@ -6,7 +6,7 @@ This repository contains the implementation and experiments for removing dynamic
 
 ```text
 .
-├── AGENT.md
+├── AGENTS.md
 ├── PLAN.md
 ├── environment.yml
 ├── configs/
@@ -156,6 +156,50 @@ Notes:
 - Backend fallback is non-silent: reason is logged and persisted in candidate metadata (`official_error` / `fallback_reason`).
 - `--strict-dual-run true` enforces both `sam2` and `trackanything` in B1 stage.
 
+## Phase 3 Workflow (E1-E4 Mask Enhancement)
+
+Phase 3 now runs staged enhancement on top of `B-best`:
+`B masks -> E1 morphology -> E2 temporal smoothing -> E3 SAM3 refine -> E4 ProPainter + evaluation`.
+
+```bash
+# 1) Sync canonical aliases used by Phase 3 default references
+bash scripts/sync_best_aliases.sh \
+  --a-exp-id phase1_fix_acceptance_20260323 \
+  --b-exp-id phase2_maskopt_full_20260323_155834
+
+# 2) Default full E1-E4 run on mandatory datasets
+bash scripts/run_part3.sh
+
+# 3) Explicit run
+python3 src/part3/run_explore.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id phase3_manual_20260323 \
+  --stages E1,E2,E3,E4 \
+  --seed 42 \
+  --strict-sam3-permission true \
+  --sam3-env-name sam3
+
+# 4) Phase 3 acceptance gate
+bash scripts/check_phase3.sh --exp-id <exp_id> --config configs/base.yaml --strict-sam3-permission true
+```
+
+Main outputs:
+- Final B+E predictions: `outputs/videos/<exp_id>/<dataset>/{frames,masks}`
+- Candidate predictions: `outputs/videos/<exp_id>/_candidates/E1..E4/...`
+- Final metrics: `outputs/metrics/<exp_id>/summary.json` and `per_dataset.csv`
+- Phase 3 ablation table: `outputs/metrics/<exp_id>/phase3_ablation.csv`
+- Phase 3 selection metadata: `outputs/metrics/<exp_id>/phase3_selection.json`
+- B-best vs B+E comparison: `outputs/metrics/<exp_id>/phase3_b_vs_e.csv`
+- Failure case explained index: `outputs/figures/<exp_id>/failure_cases/failure_cases_explained.csv`
+- Acceptance report: `outputs/metrics/<exp_id>/phase3_acceptance_report.md`
+- Runtime metadata: `outputs/metrics/<exp_id>/phase3_run_meta.json`
+
+Notes:
+- Phase 3 reads `B-best` by default (or `--phase2-exp-id` override).
+- Stage selection excludes `wild` by default (`part3.selection.exclude_datasets`) for choosing E-stage best candidates.
+- SAM3 runs in a separate conda env (`sam3`) via subprocess; strict permission failure aborts, runtime failure after permission check skips E3 and continues with E2-best.
+
 ## Conda Environment Setup
 
 Use a single staged environment named `aiaa3201` with Python 3.10.
@@ -304,9 +348,9 @@ bash scripts/preprocess.sh --datasets mandatory --overwrite
 ## Core Metrics
 
 - Mask quality: JM (IoU mean), JR (IoU recall)
-- Video quality (with GT): PSNR, SSIM
+- Removal quality: ROS, TCF, BES, Q_REMOVE
 
 ## Notes
 
-- Follow repository conventions in `AGENT.md`.
+- Follow repository conventions in `AGENTS.md`.
 - Follow execution schedule and milestones in `PLAN.md`.
