@@ -21,7 +21,6 @@ Thumbs.db
 *.tmp
 
 # Large/generated artifacts
-data/raw/*
 data/processed/*
 data/gt/*
 data/external/*
