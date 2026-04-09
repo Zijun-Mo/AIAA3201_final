@@ -30,181 +30,14 @@ This repository contains the implementation and experiments for removing dynamic
 └── notebooks/
 ```
 
-## Quick Start
+## Acceptance Runbook (Phase 0-3, Safe Defaults)
 
-1. Put datasets under `data/raw/` and optional GT under `data/gt/`.
-2. Edit `configs/base.yaml` if needed.
-3. Run baseline and SOTA pipelines:
-   - `bash scripts/run_part1.sh`
-   - `bash scripts/run_part2.sh`
-   - `bash scripts/run_part3.sh`
-4. Run evaluation:
-   - `bash scripts/evaluate.sh`
+This runbook is the default reproducible path for fresh clones.  
+Goal: pass Phase 0-3 acceptance checks with lowest risk.
 
-## Phase 0 Workflow (Engineering-Ready)
+### 0) Prepare Environment
 
-Standardize data and run unified evaluation before model experiments:
-
-```bash
-# 1) Normalize mandatory datasets into standardized frame folders
-bash scripts/preprocess.sh --datasets mandatory --overwrite
-
-# 2) Unified evaluation entry (works even when GT is missing)
-bash scripts/evaluate.sh --config configs/base.yaml --exp-id <exp_id> --datasets mandatory --pred-root outputs/videos --gt-root data/gt --allow-missing-gt true
-
-# 3) Day-1 gate check for Phase 0 completeness
-bash scripts/check_phase0.sh --exp-id <exp_id> --config configs/base.yaml
-```
-
-Input contract:
-- Raw videos: `data/raw/wild.mp4`, `data/raw/bmx-trees.mp4`, `data/raw/tennis.mp4`
-- Predictions: `outputs/videos/<dataset>/frames/` and optional `outputs/videos/<dataset>/masks/`
-- GT (optional): `data/gt/<dataset>/frames/` and optional `data/gt/<dataset>/masks/`
-
-## Phase 1 Workflow (A1-A5 Full Baseline)
-
-Phase 1 now runs a complete staged baseline:
-`YOLOv8-seg / MaskRCNN -> optical-flow dynamic filter -> mask dilation -> temporal borrow -> cv2.inpaint`.
-
-```bash
-# Default: run full A1-A5 on mandatory datasets
-bash scripts/run_part1.sh
-
-# Explicit run with custom exp id
-python3 src/part1/run_baseline.py \
-  --config configs/base.yaml \
-  --datasets mandatory \
-  --exp-id phase1_manual_20260320 \
-  --seed 42 \
-  --wild-fallback-mask true
-
-# Optional: override a specific setting (single-value run)
-python3 src/part1/run_baseline.py \
-  --config configs/base.yaml \
-  --datasets wild \
-  --exp-id phase1_wild_debug \
-  --flow-threshold 1.2 \
-  --dilation-kernel 7 \
-  --inpaint-method telea \
-  --temporal-window 1
-
-# Phase 1 acceptance gate
-bash scripts/check_phase1.sh --exp-id <exp_id> --config configs/base.yaml
-```
-
-Main outputs:
-- A-best predictions: `outputs/videos/<exp_id>/<dataset>/{frames,masks}`
-- Candidate predictions: `outputs/videos/<exp_id>/_candidates/A1..A5/...`
-- Final A-best metrics: `outputs/metrics/<exp_id>/summary.json` and `per_dataset.csv`
-- Phase 1 ablation table: `outputs/metrics/<exp_id>/phase1_ablation.csv`
-- Phase 1 selection metadata: `outputs/metrics/<exp_id>/phase1_selection.json`
-- Failure case index: `outputs/figures/<exp_id>/failure_cases/failure_cases.csv`
-- Failure case explained index: `outputs/figures/<exp_id>/failure_cases/failure_cases_explained.csv`
-- Acceptance report: `outputs/metrics/<exp_id>/phase1_acceptance_report.md`
-
-Notes:
-- If `ultralytics` is missing and `part1.runtime.auto_install_missing=true`, script auto-installs it and continues.
-- If YOLO install/load fails, pipeline logs fallback and continues with available segmentation model(s).
-- `--seed` defaults to `project.seed` in config and is recorded in `phase1_run_meta.json`.
-- For `wild`, fallback mask generation can be enabled with `--wild-fallback-mask true` (or config fallback flag).
-
-## Phase 2 Workflow (B1-B5 SOTA Mainline)
-
-Phase 2 now runs staged SOTA reproduction:
-`SAM2 / TrackAnything (dual run) -> ProPainter`, with auto-install, fallback, and B-best selection.
-
-```bash
-# Default: run full B1-B5 on mandatory datasets
-bash scripts/run_part2.sh
-
-# Explicit run with custom exp id
-python3 src/part2/run_sota.py \
-  --config configs/base.yaml \
-  --datasets mandatory \
-  --exp-id phase2_manual_20260323 \
-  --mask-models sam2,trackanything \
-  --prompt-detector yolo \
-  --seed 42 \
-  --strict-dual-run true
-
-# Quick smoke (single dataset, limited frames)
-python3 src/part2/run_sota.py \
-  --config configs/base.yaml \
-  --datasets wild \
-  --stages B1 \
-  --max-frames 16 \
-  --exp-id phase2_smoke_wild
-
-# Phase 2 acceptance gate
-bash scripts/check_phase2.sh --exp-id <exp_id> --config configs/base.yaml --strict-dual-run true
-```
-
-Main outputs:
-- B-best predictions: `outputs/videos/<exp_id>/<dataset>/{frames,masks}`
-- Candidate predictions: `outputs/videos/<exp_id>/_candidates/B1..B5/...`
-- Final B-best metrics: `outputs/metrics/<exp_id>/summary.json` and `per_dataset.csv`
-- Phase 2 ablation table: `outputs/metrics/<exp_id>/phase2_ablation.csv`
-- Phase 2 selection metadata: `outputs/metrics/<exp_id>/phase2_selection.json`
-- A-best vs B-best comparison: `outputs/metrics/<exp_id>/phase2_a_vs_b.csv`
-- Failure case explained index: `outputs/figures/<exp_id>/failure_cases/failure_cases_explained.csv`
-- Acceptance report: `outputs/metrics/<exp_id>/phase2_acceptance_report.md`
-
-Notes:
-- External assets are auto-managed under `outputs/external/part2/`.
-- Backend policy: `run_sota.py` now tries local official SAM2/Track-Anything inference first, and only falls back when official runtime/checkpoints fail.
-- If ProPainter fails (including OOM), pipeline retries degraded profile and can fallback to CV2 inpaint while recording status.
-- Backend fallback is non-silent: reason is logged and persisted in candidate metadata (`official_error` / `fallback_reason`).
-- `--strict-dual-run true` enforces both `sam2` and `trackanything` in B1 stage.
-
-## Phase 3 Workflow (E1-E4 Mask Enhancement)
-
-Phase 3 now runs staged enhancement on top of `B-best`:
-`B masks -> E1 morphology -> E2 temporal smoothing -> E3 SAM3 refine -> E4 ProPainter + evaluation`.
-
-```bash
-# 1) Sync canonical aliases used by Phase 3 default references
-bash scripts/sync_best_aliases.sh \
-  --a-exp-id phase1_fix_acceptance_20260323 \
-  --b-exp-id phase2_maskopt_full_20260323_155834
-
-# 2) Default full E1-E4 run on mandatory datasets
-bash scripts/run_part3.sh
-
-# 3) Explicit run
-python3 src/part3/run_explore.py \
-  --config configs/base.yaml \
-  --datasets mandatory \
-  --exp-id phase3_manual_20260323 \
-  --stages E1,E2,E3,E4 \
-  --seed 42 \
-  --strict-sam3-permission true \
-  --sam3-env-name sam3
-
-# 4) Phase 3 acceptance gate
-bash scripts/check_phase3.sh --exp-id <exp_id> --config configs/base.yaml --strict-sam3-permission true
-```
-
-Main outputs:
-- Final B+E predictions: `outputs/videos/<exp_id>/<dataset>/{frames,masks}`
-- Candidate predictions: `outputs/videos/<exp_id>/_candidates/E1..E4/...`
-- Final metrics: `outputs/metrics/<exp_id>/summary.json` and `per_dataset.csv`
-- Phase 3 ablation table: `outputs/metrics/<exp_id>/phase3_ablation.csv`
-- Phase 3 selection metadata: `outputs/metrics/<exp_id>/phase3_selection.json`
-- B-best vs B+E comparison: `outputs/metrics/<exp_id>/phase3_b_vs_e.csv`
-- Failure case explained index: `outputs/figures/<exp_id>/failure_cases/failure_cases_explained.csv`
-- Acceptance report: `outputs/metrics/<exp_id>/phase3_acceptance_report.md`
-- Runtime metadata: `outputs/metrics/<exp_id>/phase3_run_meta.json`
-
-Notes:
-- Phase 3 reads `B-best` by default (or `--phase2-exp-id` override).
-- Stage selection excludes `wild` by default (`part3.selection.exclude_datasets`) for choosing E-stage best candidates.
-- SAM3 runs in a separate conda env (`sam3`) via subprocess; strict permission failure aborts, runtime failure after permission check skips E3 and continues with E2-best.
-
-## Conda Environment Setup
-
-Use a single staged environment named `aiaa3201` with Python 3.10.
-
-### 1) Create and activate environment (base)
+Use a single staged conda environment:
 
 ```bash
 conda env create -f environment.yml
@@ -214,16 +47,14 @@ python -V
 
 Expected: `Python 3.10.x`
 
-### 2) Stage A (required core dependencies)
+Install Stage A (required):
 
 ```bash
 pip install -r requirements.txt
 python -c "import numpy, cv2, yaml, skimage, matplotlib; print('core ok')"
 ```
 
-### 3) Stage B (on-demand advanced GPU stack)
-
-Install this stage when running SAM2/TrackAnything/ProPainter pipelines.
+Install Stage B for Phase 2/3:
 
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
@@ -231,36 +62,186 @@ pip install "einops>=0.7,<1" "omegaconf>=2.3,<3" "hydra-core>=1.3,<2" "imageio>=
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-### 4) Stage C (optional diffusion stack)
-
-Install this stage only for Route G (diffusion-based inpainting).
+Optional Stage C (Route G only):
 
 ```bash
 pip install "diffusers>=0.30,<1" "transformers>=4.44,<5" "accelerate>=0.33,<1" "xformers>=0.0.27"
 ```
 
-## Environment Validation
+### 1) Define Experiment IDs Once
 
 ```bash
-conda env list | grep aiaa3201
-python -V
-bash scripts/run_part1.sh
-bash scripts/run_part2.sh
+export P0_EXP="phase0_$(date +%Y%m%d_%H%M%S)"
+export P1_EXP="phase1_$(date +%Y%m%d_%H%M%S)"
+export P2_EXP="phase2_$(date +%Y%m%d_%H%M%S)"
+export P3_EXP="phase3_$(date +%Y%m%d_%H%M%S)"
 ```
+
+### 2) Preflight Directories and Mandatory Data
+
+```bash
+mkdir -p data/{raw,processed,gt} outputs/{videos,masks,figures,metrics,logs}
+ls data/raw/wild.mp4 data/raw/bmx-trees.mp4 data/raw/tennis.mp4
+```
+
+### 3) Phase 0 (Standardize + Unified Evaluation + Gate)
+
+```bash
+bash scripts/preprocess.sh --datasets mandatory --overwrite
+
+bash scripts/evaluate.sh \
+  --config configs/base.yaml \
+  --exp-id "$P0_EXP" \
+  --datasets mandatory \
+  --pred-root data/processed \
+  --gt-root data/gt \
+  --allow-missing-gt true
+
+bash scripts/check_phase0.sh --exp-id "$P0_EXP" --config configs/base.yaml
+```
+
+### 4) Phase 1 (A1-A5 + Gate)
+
+```bash
+python3 src/part1/run_baseline.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P1_EXP" \
+  --seed 42 \
+  --wild-fallback-mask true
+
+bash scripts/check_phase1.sh --exp-id "$P1_EXP" --config configs/base.yaml
+```
+
+### 5) Phase 2 (B1-B5 + Gate, Non-Strict Default)
+
+`--phase1-exp-id "$P1_EXP"` is required in this safe path to ensure `phase2_a_vs_b.csv` is generated.
+
+```bash
+python3 src/part2/run_sota.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P2_EXP" \
+  --phase1-exp-id "$P1_EXP" \
+  --seed 42 \
+  --strict-dual-run false
+
+bash scripts/check_phase2.sh \
+  --exp-id "$P2_EXP" \
+  --config configs/base.yaml \
+  --strict-dual-run false
+```
+
+### 6) Phase 3 (E1,E2,E4 + Gate, Non-Strict Default)
+
+Safe default skips E3 permission risk on fresh clones.
+
+```bash
+python3 src/part3/run_explore.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P3_EXP" \
+  --phase2-exp-id "$P2_EXP" \
+  --stages E1,E2,E4 \
+  --seed 42 \
+  --strict-sam3-permission false
+
+bash scripts/check_phase3.sh \
+  --exp-id "$P3_EXP" \
+  --config configs/base.yaml \
+  --strict-sam3-permission false
+```
+
+## CLI Contract for Acceptance
+
+- Phase 2 safe path requires `--phase1-exp-id`.
+- Phase 3 safe path requires `--phase2-exp-id`.
+- Safe-path gate commands use:
+  - `check_phase2 --strict-dual-run false`
+  - `check_phase3 --strict-sam3-permission false`
+
+## Output Contract (Default `video_only=true`)
+
+Stable output locations:
+
+- Restored prediction video: `outputs/videos/<exp_id>/<dataset>/restored_h264.mp4`
+- Predicted mask video: `outputs/videos/<exp_id>/<dataset>/mask_h264.mp4`
+- Metrics root: `outputs/metrics/<exp_id>/`
+
+Important behavior:
+
+- Intermediate `_candidates/` may be auto-cleaned.
+- `frames/` and `masks/` directories may be auto-cleaned when video-only output is enabled.
+
+## Optional: Strict Mode
+
+Use strict mode only when environment and permissions are fully ready.
+
+Phase 2 strict:
+
+```bash
+python3 src/part2/run_sota.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P2_EXP" \
+  --phase1-exp-id "$P1_EXP" \
+  --seed 42 \
+  --strict-dual-run true
+
+bash scripts/check_phase2.sh \
+  --exp-id "$P2_EXP" \
+  --config configs/base.yaml \
+  --strict-dual-run true
+```
+
+Phase 3 strict:
+
+```bash
+python3 src/part3/run_explore.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P3_EXP" \
+  --phase2-exp-id "$P2_EXP" \
+  --stages E1,E2,E3,E4 \
+  --seed 42 \
+  --sam3-env-name sam3 \
+  --strict-sam3-permission true
+
+bash scripts/check_phase3.sh \
+  --exp-id "$P3_EXP" \
+  --config configs/base.yaml \
+  --strict-sam3-permission true
+```
+
+## Optional: Alias Management (`A-best` / `B-best`)
+
+Aliases are not required for the default acceptance runbook.  
+Use this only when you want stable alias folders for analysis or downstream references.
+
+```bash
+bash scripts/sync_best_aliases.sh \
+  --a-exp-id "$P1_EXP" \
+  --b-exp-id "$P2_EXP"
+```
+
+Outputs:
+
+- `outputs/videos/A-best`, `outputs/metrics/A-best`, `outputs/figures/A-best`
+- `outputs/videos/B-best`, `outputs/metrics/B-best`, `outputs/figures/B-best`
+- `outputs/metrics/best_alias_map.json`
 
 ## Troubleshooting
 
 - CUDA mismatch:
-  - Ensure NVIDIA driver is available (`nvidia-smi`).
-  - Reinstall torch packages with cu121 index URL exactly as shown above.
+  - Ensure NVIDIA driver is available: `nvidia-smi`
+  - Reinstall torch packages with the exact `cu121` index URL above.
 - pip index / network issues:
-  - Retry with `pip --default-timeout=120 install ...`.
-  - Upgrade pip first: `python -m pip install --upgrade pip`.
-- version conflict rollback:
-  - Remove env and recreate from scratch:
-    - `conda deactivate`
-    - `conda env remove -n aiaa3201`
-    - `conda env create -f environment.yml`
+  - Retry with `pip --default-timeout=120 install ...`
+  - Upgrade pip: `python -m pip install --upgrade pip`
+- Environment reset:
+  - `conda deactivate`
+  - `conda env remove -n aiaa3201`
+  - `conda env create -f environment.yml`
 
 ## Mandatory Datasets
 
