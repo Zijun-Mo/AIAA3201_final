@@ -59,29 +59,56 @@ def load_masks_by_frame_names(mask_dir: Path, frame_names: list[str], shape_hw: 
     return out
 
 
-def pick_anchor_boxes(masks_u8: list[np.ndarray], max_boxes: int = 1) -> tuple[int, list[tuple[int, int, int, int]]]:
-    if not masks_u8:
-        raise RuntimeError("No masks provided for SAM3 prompt selection")
+def build_prompt_anchors(
+    masks_u8: list[np.ndarray],
+    shape_hw: tuple[int, int],
+    max_anchors: int = 3,
+    max_prompts_per_anchor: int = 3,
+    min_anchor_gap_ratio: float = 0.16,
+    min_area_ratio: float = 1e-6,
+) -> list[dict]:
+    """Mirror of Phase 2 build_prior_prompt_anchors_from_masks: multi-anchor, multi-box, gap-spaced."""
+    h, w = shape_hw
+    frame_count = len(masks_u8)
+    min_area_px = max(1, int(min_area_ratio * h * w))
+    min_gap = int(round(min_anchor_gap_ratio * max(1, frame_count - 1)))
 
-    areas = [int((m > 0).sum()) for m in masks_u8]
-    frame_idx = int(np.argmax(np.asarray(areas, dtype=np.int64)))
-    if areas[frame_idx] <= 0:
-        raise RuntimeError("Input masks are all zero; cannot build SAM3 box prompt")
+    candidates = []
+    for idx, mask in enumerate(masks_u8):
+        binary = (np.asarray(mask) > 0).astype(np.uint8)
+        if binary.sum() == 0:
+            continue
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        comps = []
+        for label in range(1, num_labels):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area < min_area_px:
+                continue
+            x = int(stats[label, cv2.CC_STAT_LEFT])
+            y = int(stats[label, cv2.CC_STAT_TOP])
+            bw = int(stats[label, cv2.CC_STAT_WIDTH])
+            bh = int(stats[label, cv2.CC_STAT_HEIGHT])
+            comps.append((area, (x, y, x + bw - 1, y + bh - 1)))
+        if comps:
+            candidates.append({
+                "frame_idx": idx,
+                "total_area": float(binary.sum()),
+                "components": sorted(comps, key=lambda c: c[0], reverse=True),
+            })
 
-    mask = (masks_u8[frame_idx] > 0).astype(np.uint8)
-    ys, xs = np.where(mask > 0)
-    if ys.size == 0 or xs.size == 0:
-        raise RuntimeError("Failed to derive prompt box from input masks")
+    selected = []
+    for cand in sorted(candidates, key=lambda c: c["total_area"], reverse=True):
+        if min_gap > 0 and any(abs(cand["frame_idx"] - s["frame_idx"]) < min_gap for s in selected):
+            continue
+        boxes = [box for _, box in cand["components"][:max_prompts_per_anchor]]
+        if boxes:
+            selected.append({"frame_idx": cand["frame_idx"], "boxes": boxes})
+        if len(selected) >= max_anchors:
+            break
 
-    x1 = int(xs.min())
-    y1 = int(ys.min())
-    x2 = int(xs.max())
-    y2 = int(ys.max())
-    boxes: list[tuple[int, int, int, int]] = [(x1, y1, x2, y2)]
-
-    if not boxes:
-        raise RuntimeError("Failed to derive prompt boxes from input masks")
-    return frame_idx, boxes
+    if not selected:
+        raise RuntimeError("Input masks are all zero; cannot build SAM3 box prompts")
+    return selected
 
 
 def materialize_video_dir(frames_dir: Path) -> tuple[Path, list[str]]:
@@ -195,56 +222,15 @@ def run_sam3_refine(
             raise RuntimeError(f"Unable to read first frame: {input_frames / frame_names[0]}")
         h, w = first.shape[:2]
         masks_u8 = load_masks_by_frame_names(mask_dir=input_masks, frame_names=frame_names, shape_hw=(h, w))
-        prompt_frame_idx, prompt_boxes = pick_anchor_boxes(masks_u8=masks_u8, max_boxes=1)
-        boxes_xywh_rel: list[list[float]] = []
-        for x1, y1, x2, y2 in prompt_boxes:
-            bw = max(1, x2 - x1 + 1)
-            bh = max(1, y2 - y1 + 1)
-            boxes_xywh_rel.append(
-                [
-                    float(x1) / float(max(1, w)),
-                    float(y1) / float(max(1, h)),
-                    float(bw) / float(max(1, w)),
-                    float(bh) / float(max(1, h)),
-                ]
-            )
+        anchors = build_prompt_anchors(masks_u8=masks_u8, shape_hw=(h, w))
 
         builder, builder_name = resolve_sam3_builder()
         predictor = build_predictor(builder=builder, model_cfg=model_cfg, checkpoint=checkpoint, device=device)
 
-        start = predictor.handle_request(
-            request={
-                "type": "start_session",
-                "resource_path": str(video_dir),
-            }
-        )
-        session_id = str(start.get("session_id", ""))
-        if not session_id:
-            raise RuntimeError("SAM3 start_session did not return session_id")
+        pred_masks = [np.zeros((h, w), dtype=np.uint8) for _ in frame_names]
 
-        try:
-            add_request: dict[str, Any] = {
-                "type": "add_prompt",
-                "session_id": session_id,
-                "frame_index": int(prompt_frame_idx),
-                # SAM3 video API currently expects exactly one visual prompt box per initial add_prompt.
-                "bounding_boxes": [boxes_xywh_rel[0]],
-                "bounding_box_labels": [1],
-            }
-            if prompt_text.strip():
-                add_request["text"] = prompt_text.strip()
-            add_resp = predictor.handle_request(request=add_request)
-            _ = add_resp
-
-            pred_masks = [np.zeros((h, w), dtype=np.uint8) for _ in frame_names]
-            for response in predictor.handle_stream_request(
-                request={
-                    "type": "propagate_in_video",
-                    "session_id": session_id,
-                    "propagation_direction": "both",
-                    "start_frame_index": int(prompt_frame_idx),
-                }
-            ):
+        def absorb_stream(stream: Any) -> None:
+            for response in stream:
                 if not isinstance(response, dict):
                     continue
                 frame_idx = int(response.get("frame_index", -1))
@@ -265,12 +251,59 @@ def run_sam3_refine(
                     if m.shape[:2] != (h, w):
                         m = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
                     frame_mask = np.maximum(frame_mask, ((m > 0).astype(np.uint8) * 255))
-                pred_masks[frame_idx] = frame_mask
-        finally:
+                pred_masks[frame_idx] = np.maximum(pred_masks[frame_idx], frame_mask)
+
+        # bidirectional_no_wrap: each anchor propagates forward then backward independently
+        for anchor in anchors:
+            anchor_frame_idx = int(anchor["frame_idx"])
+            boxes_xywh_rel = []
+            for x1, y1, x2, y2 in anchor["boxes"]:
+                bw = max(1, x2 - x1 + 1)
+                bh = max(1, y2 - y1 + 1)
+                boxes_xywh_rel.append([
+                    float(x1) / float(max(1, w)),
+                    float(y1) / float(max(1, h)),
+                    float(bw) / float(max(1, w)),
+                    float(bh) / float(max(1, h)),
+                ])
+
+            start = predictor.handle_request({"type": "start_session", "resource_path": str(video_dir)})
+            session_id = str(start.get("session_id", ""))
+            if not session_id:
+                raise RuntimeError("SAM3 start_session did not return session_id")
             try:
-                predictor.handle_request({"type": "close_session", "session_id": session_id})
-            except Exception:
-                pass
+                for box_rel in boxes_xywh_rel:
+                    add_req: dict[str, Any] = {
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": anchor_frame_idx,
+                        "bounding_boxes": [box_rel],
+                        "bounding_box_labels": [1],
+                    }
+                    if prompt_text.strip():
+                        add_req["text"] = prompt_text.strip()
+                    predictor.handle_request(request=add_req)
+
+                # forward pass
+                absorb_stream(predictor.handle_stream_request({
+                    "type": "propagate_in_video",
+                    "session_id": session_id,
+                    "propagation_direction": "forward",
+                    "start_frame_index": anchor_frame_idx,
+                }))
+                # backward pass (no_wrap: only if anchor is not first frame)
+                if anchor_frame_idx > 0:
+                    absorb_stream(predictor.handle_stream_request({
+                        "type": "propagate_in_video",
+                        "session_id": session_id,
+                        "propagation_direction": "backward",
+                        "start_frame_index": anchor_frame_idx,
+                    }))
+            finally:
+                try:
+                    predictor.handle_request({"type": "close_session", "session_id": session_id})
+                except Exception:
+                    pass
 
         mean_ratio = float(np.mean(np.asarray([(m > 0).mean() for m in pred_masks], dtype=np.float32)))
         if mean_ratio <= 0.0:
@@ -283,8 +316,8 @@ def run_sam3_refine(
         return {
             "status": "ok",
             "builder": builder_name,
-            "prompt_frame_idx": int(prompt_frame_idx),
-            "num_prompt_boxes": int(len(prompt_boxes)),
+            "num_anchors": len(anchors),
+            "anchor_frame_indices": [a["frame_idx"] for a in anchors],
             "mean_mask_ratio": mean_ratio,
         }
     finally:

@@ -43,6 +43,11 @@
 - 任意方法输出都能进入同一评估脚本。
 - 同一视频可稳定复现实验结果。
 
+### 验收结果
+- **状态**：PASS（2026-04-30）
+- 3 个 mandatory 数据集（wild / bmx-trees / tennis）预处理完成，帧命名与 mask 格式统一。
+- 统一评估脚本接口验证通过，任意方法输出均可进入同一评估流程。
+
 ### 风险与回退
 - 风险：数据格式不一致导致评估失败。
 - 回退：先做 frame-level 标准化脚本，只允许标准输入进入后续阶段。
@@ -70,6 +75,12 @@
 - 3 个 mandatory 数据集至少跑通 A-best。
 - A-best 指标与可视化可复现。
 
+### 验收结果
+- **状态**：PASS（2026-04-30）
+- Exp ID：`phase1_20260430_*`（`check_phase1`: PASS）
+- 3 个 mandatory 数据集均跑通 A-best（YOLO+光流筛选+cv2.inpaint）。
+- A-best 指标可复现，输出视频与可视化齐全。
+
 ---
 
 ## Phase 2：路线 B（主线方法，2.5-3.5 天）
@@ -93,6 +104,13 @@
 ### 验收门槛
 - B-best 在多数场景优于 A-best（至少在视觉质量和关键指标上）。
 - 3 个 mandatory 数据集完整视频输出齐全。
+
+### 验收结果
+- **状态**：PASS（2026-04-30）
+- Exp ID：`phase2_20260430_175248`（`check_phase2 --strict-dual-run false`: PASS）
+- B-best backend：`sam2`，传播策略：`bidirectional_no_wrap`
+- Aggregate：`JM=0.6647`，`JR=0.7688`，`Q_REMOVE=0.9452`
+- 3 个 mandatory 数据集完整视频输出齐全，B-best 在视觉质量和关键指标上优于 A-best。
 
 ### 风险与回退
 - 风险：SOTA 环境复杂，短期无法稳定。
@@ -118,6 +136,14 @@
 
 ### 验收门槛
 - 至少一个 mandatory 数据集上出现可解释的提升。
+
+### 验收结果
+- **状态**：PASS（2026-05-01）
+- Exp ID：`phase3_sam3_multianchor_20260501_012933`（`check_phase3 --strict-sam3-permission true`: PASS）
+- E3 SAM3 multi-anchor refiner 与 SAM2 提示词策略完全统一（multi-anchor、gap-spaced、bidirectional_no_wrap）。
+- Aggregate（B+E+SAM3）：`JM=0.6782`，`JR=0.7812`，`Q_REMOVE=0.9406`
+- B→E+SAM3 delta：`delta_JM=+0.0135`，`delta_JR=+0.0124`，`delta_Q_REMOVE=-0.0046`
+- bmx-trees 和 tennis 上 JM/JR 均有可解释提升；wild 无 GT mask 故 JM/JR 为 None。
 
 ---
 
@@ -156,6 +182,14 @@
 - 3 个 mandatory 数据集均有 `VGGT4D prior` 版本视频与指标。
 - YOLO、VGGT4D raw、融合结果只进入消融表和失败分析；若没有优于 B-best，也按真实结果报告，不替换 F-final。
 - 若 `VGGT4D prior` 生成失败，路线 F 标记为失败并记录原因，禁止改用 YOLO 或融合结果冒充路线 F 最终产物。
+
+### 验收结果
+- **状态**：PASS（2026-04-30）
+- Exp ID：`phase4_20260430_183904`（`check_phase4`: PASS）
+- F-best：`F1 / VGGT4D prior`，关联 Phase2：`phase2_20260430_175248`（B-best backend=`sam2`）
+- Aggregate（VGGT4D prior）：`JM=0.7074`，`JR=0.7688`，`Q_REMOVE=0.9418`
+- B→F delta：`delta_JM=+0.0427`，`delta_JR=0.0`，`delta_Q_REMOVE=-0.0034`
+- 3 个 mandatory 数据集均有 VGGT4D prior 版本视频与指标；JM 显著提升，Q_REMOVE 轻微下降属正常范围。
 
 ---
 

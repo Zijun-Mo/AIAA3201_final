@@ -135,8 +135,6 @@ bash scripts/check_phase2.sh \
 
 ### 6) Phase 3 (E1,E2,E4 + Gate, Non-Strict Default)
 
-Safe default skips E3 permission risk on fresh clones.
-
 ```bash
 python3 src/part3/run_explore.py \
   --config configs/base.yaml \
@@ -145,58 +143,31 @@ python3 src/part3/run_explore.py \
   --phase2-exp-id "$P2_EXP" \
   --stages E1,E2,E4 \
   --seed 42 \
-  --strict-sam3-permission false
+  --strict-sam3-permission true
 
 bash scripts/check_phase3.sh \
   --exp-id "$P3_EXP" \
   --config configs/base.yaml \
-  --strict-sam3-permission false
+  --strict-sam3-permission true
 ```
 
 ### 7) Phase 4 (F1-F5 + Gate, VGGT4D Prior)
 
-Phase 4 Route F exports **VGGT4D prior** as the final video/metric result. Here, `prior` means the VGGT4D raw mask converted to prompt anchors and passed through the same global mask backend and `bidirectional_no_wrap` propagation policy used by B-best, not the raw VGGT4D mask directly. The propagation policy treats videos as non-cyclic, so no backend may connect the last frame back to the first frame.
+Phase 4 Route F exports **VGGT4D prior** as the final video/metric result. `prior` means the VGGT4D raw mask converted to prompt anchors and passed through the same global mask backend and `bidirectional_no_wrap` propagation policy used by B-best. The propagation policy treats videos as non-cyclic, so no backend may connect the last frame back to the first frame.
 
-Latest validated full run (2026-04-30):
-- `Phase2`: `phase2_bidir_full_20260430_150340` (`check_phase2`: PASS)
-- `Phase4`: `phase4_bidir_full_20260430_162056` (`check_phase4`: PASS)
-- `Phase4 aggregate`: `JM=0.7074`, `JR=0.7688`, `Q_REMOVE=0.9418`
-- `B -> F aggregate delta`: `delta_JM=+0.0427`, `delta_JR=0.0`, `delta_Q_REMOVE=-0.0034`
-
-Current F-stage semantics:
-- `F1`: final Route F result, using VGGT4D -> B-best mask backend with bidirectional no-wrap propagation -> ProPainter.
-- `F2`: unchanged B-best baseline (reference route).
+F-stage semantics:
+- `F1`: VGGT4D prior → B-best mask backend + bidirectional no-wrap → ProPainter (final Route F output).
+- `F2`: unchanged B-best baseline (reference).
 - `F3/F4`: YOLO, VGGT4D raw/prior, and prior-fusion ablations for honest comparison only.
-- `F-best`: forced to a pure VGGT4D-prior candidate; fusion/YOLO candidates are never exported as the final Route F output.
+- `F-best`: forced to a pure VGGT4D-prior candidate.
 
-Preflight for VGGT4D:
+Preflight:
 
 ```bash
 conda run -n vggt4d python -V
 conda run -n vggt4d python data/external/vggt4d/run_vggt4d_chunked.py --help
 ls -lh data/external/vggt4d/ckpts/model_tracker_fixed_e20.pt
 ```
-
-Expected:
-- `conda` env `vggt4d` is available
-- checkpoint exists at `data/external/vggt4d/ckpts/model_tracker_fixed_e20.pt`
-
-Smoke run (single dataset):
-
-```bash
-export P4_SMOKE_EXP="phase4_smoke_$(date +%Y%m%d_%H%M%S)"
-
-conda run -n aiaa3201 python src/part3/run_explore.py \
-  --config configs/base.yaml \
-  --datasets wild \
-  --exp-id "$P4_SMOKE_EXP" \
-  --phase2-exp-id "$P2_EXP" \
-  --stages F1,F2,F3,F4,F5 \
-  --phase phase4 \
-  --seed 42
-```
-
-Full mandatory run:
 
 ```bash
 export P4_EXP="phase4_$(date +%Y%m%d_%H%M%S)"
