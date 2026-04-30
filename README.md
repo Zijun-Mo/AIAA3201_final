@@ -116,6 +116,7 @@ bash scripts/check_phase1.sh --exp-id "$P1_EXP" --config configs/base.yaml
 ### 5) Phase 2 (B1-B5 + Gate, Non-Strict Default)
 
 `--phase1-exp-id "$P1_EXP"` is required in this safe path to ensure `phase2_a_vs_b.csv` is generated.
+Phase 2 mask propagation uses one global backend selected with mask-first scoring and the default `bidirectional_no_wrap` policy, so SAM2/Track Anything propagate from prompt anchors forward and backward without connecting the last frame to the first frame.
 
 ```bash
 python3 src/part2/run_sota.py \
@@ -152,6 +153,66 @@ bash scripts/check_phase3.sh \
   --strict-sam3-permission false
 ```
 
+### 7) Phase 4 (F1-F5 + Gate, VGGT4D Prior)
+
+Phase 4 Route F exports **VGGT4D prior** as the final video/metric result. Here, `prior` means the VGGT4D raw mask converted to prompt anchors and passed through the same global mask backend and `bidirectional_no_wrap` propagation policy used by B-best, not the raw VGGT4D mask directly. The propagation policy treats videos as non-cyclic, so no backend may connect the last frame back to the first frame.
+
+Latest validated full run (2026-04-30):
+- `Phase2`: `phase2_bidir_full_20260430_150340` (`check_phase2`: PASS)
+- `Phase4`: `phase4_bidir_full_20260430_162056` (`check_phase4`: PASS)
+- `Phase4 aggregate`: `JM=0.7074`, `JR=0.7688`, `Q_REMOVE=0.9418`
+- `B -> F aggregate delta`: `delta_JM=+0.0427`, `delta_JR=0.0`, `delta_Q_REMOVE=-0.0034`
+
+Current F-stage semantics:
+- `F1`: final Route F result, using VGGT4D -> B-best mask backend with bidirectional no-wrap propagation -> ProPainter.
+- `F2`: unchanged B-best baseline (reference route).
+- `F3/F4`: YOLO, VGGT4D raw/prior, and prior-fusion ablations for honest comparison only.
+- `F-best`: forced to a pure VGGT4D-prior candidate; fusion/YOLO candidates are never exported as the final Route F output.
+
+Preflight for VGGT4D:
+
+```bash
+conda run -n vggt4d python -V
+conda run -n vggt4d python data/external/vggt4d/run_vggt4d_chunked.py --help
+ls -lh data/external/vggt4d/ckpts/model_tracker_fixed_e20.pt
+```
+
+Expected:
+- `conda` env `vggt4d` is available
+- checkpoint exists at `data/external/vggt4d/ckpts/model_tracker_fixed_e20.pt`
+
+Smoke run (single dataset):
+
+```bash
+export P4_SMOKE_EXP="phase4_smoke_$(date +%Y%m%d_%H%M%S)"
+
+conda run -n aiaa3201 python src/part3/run_explore.py \
+  --config configs/base.yaml \
+  --datasets wild \
+  --exp-id "$P4_SMOKE_EXP" \
+  --phase2-exp-id "$P2_EXP" \
+  --stages F1,F2,F3,F4,F5 \
+  --phase phase4 \
+  --seed 42
+```
+
+Full mandatory run:
+
+```bash
+export P4_EXP="phase4_$(date +%Y%m%d_%H%M%S)"
+
+conda run -n aiaa3201 python src/part3/run_explore.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P4_EXP" \
+  --phase2-exp-id "$P2_EXP" \
+  --stages F1,F2,F3,F4,F5 \
+  --phase phase4 \
+  --seed 42
+
+bash scripts/check_phase4.sh --exp-id "$P4_EXP" --config configs/base.yaml
+```
+
 ## CLI Contract for Acceptance
 
 - Phase 2 safe path requires `--phase1-exp-id`.
@@ -172,6 +233,10 @@ Important behavior:
 
 - Intermediate `_candidates/` may be auto-cleaned.
 - `frames/` and `masks/` directories may be auto-cleaned when video-only output is enabled.
+
+Phase 4 naming (migrated):
+- Prior naming is now `vggt4d` / `vggt4d_yolo` (replacing `vggt` / `vggt_yolo`).
+- `phase4_mask_priors.csv` and Phase 4 logs/reports use the new naming.
 
 ## Optional: Strict Mode
 

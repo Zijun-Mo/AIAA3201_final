@@ -735,6 +735,48 @@ def align_masks_to_frame_count(
     return out
 
 
+def merge_mask_sequences(
+    sequences: list[list[np.ndarray]],
+    frame_shape: tuple[int, int],
+    frame_count: int,
+) -> list[np.ndarray]:
+    h, w = frame_shape
+    merged = [np.zeros((h, w), dtype=np.uint8) for _ in range(frame_count)]
+    for seq in sequences:
+        aligned = align_masks_to_frame_count(seq, frame_count=frame_count, frame_shape=frame_shape)
+        for idx, mask in enumerate(aligned):
+            merged[idx] = np.maximum(merged[idx], ((np.asarray(mask) > 0).astype(np.uint8) * 255))
+    return merged
+
+
+def normalize_mask_propagation_cfg(part2_cfg: dict[str, Any]) -> dict[str, Any]:
+    cfg = part2_cfg.get("mask_propagation", {}) or {}
+    mode = str(cfg.get("mode", "bidirectional_no_wrap")).strip().lower()
+    if mode not in {"bidirectional_no_wrap", "forward_only"}:
+        mode = "bidirectional_no_wrap"
+    return {
+        "mode": mode,
+        "max_anchors": max(1, int(cfg.get("max_anchors", 3))),
+        "max_prompts_per_anchor": max(1, int(cfg.get("max_prompts_per_anchor", 3))),
+        "min_anchor_gap_ratio": max(0.0, float(cfg.get("min_anchor_gap_ratio", 0.16))),
+        "min_prompt_area_ratio": max(0.0, float(cfg.get("min_prompt_area_ratio", 1e-6))),
+    }
+
+
+def build_bidirectional_prompt_orders(
+    frame_count: int,
+    prompt_frame_idx: int,
+    mode: str = "bidirectional_no_wrap",
+) -> dict[str, list[int]]:
+    if frame_count <= 0:
+        return {"forward": [], "backward": []}
+    start = max(0, min(frame_count - 1, int(prompt_frame_idx)))
+    return {
+        "forward": list(range(start, frame_count)),
+        "backward": list(range(start, -1, -1)) if mode == "bidirectional_no_wrap" else [],
+    }
+
+
 def normalize_odd_kernel(kernel_size: int) -> int:
     k = max(1, int(kernel_size))
     if k % 2 == 0:
@@ -817,44 +859,151 @@ def build_auto_prompts(
     frames: list[np.ndarray],
     max_prompts: int,
 ) -> dict[str, Any]:
-    best_idx = 0
-    best_area = -1.0
-    best_instances: list[dict[str, Any]] = []
+    frame_shape = frames[0].shape[:2] if frames else (1, 1)
+    prior_masks = union_instances_to_masks(instances_per_frame, frame_shape=frame_shape)
+    anchors, meta = build_prior_prompt_anchors_from_masks(
+        masks_u8=prior_masks,
+        frame_shape=frame_shape,
+        max_anchors=1,
+        max_prompts_per_anchor=max_prompts,
+        min_area_ratio=0.0,
+        min_anchor_gap_ratio=0.0,
+        fallback_frames=frames,
+        source_name="detector",
+    )
+    if not anchors:
+        return {
+            "frame_idx": 0,
+            "boxes": [],
+            "source": "empty",
+            "max_area": 0.0,
+            "anchors": [],
+            "anchor_meta": meta,
+        }
 
-    for idx, instances in enumerate(instances_per_frame):
-        total = 0.0
-        for inst in instances:
-            total += float((inst["mask"] > 0).sum())
-        if total > best_area:
-            best_area = total
-            best_idx = idx
-            best_instances = instances
-
-    boxes: list[tuple[int, int, int, int]] = []
-    ranked = sorted(best_instances, key=lambda x: float((x["mask"] > 0).sum()), reverse=True)
-    for inst in ranked[: max(1, max_prompts)]:
-        box = mask_to_bbox((inst["mask"] > 0).astype(np.uint8) * 255)
-        if box is not None:
-            boxes.append(box)
-
-    source = "detector"
-    if not boxes:
-        fallback = build_motion_fallback_box(frames)
-        if fallback is not None:
-            boxes = [fallback]
-            source = "motion_fallback"
-
-    if not boxes and frames:
-        h, w = frames[0].shape[:2]
-        boxes = [(int(w * 0.3), int(h * 0.3), int(w * 0.7), int(h * 0.8))]
-        source = "center_fallback"
-
+    first = anchors[0]
     return {
-        "frame_idx": int(best_idx),
-        "boxes": boxes,
-        "source": source,
-        "max_area": float(best_area),
+        "frame_idx": int(first["frame_idx"]),
+        "boxes": first["boxes"],
+        "source": first["source"],
+        "max_area": float(first.get("total_area", 0.0)),
+        "anchors": anchors,
+        "anchor_meta": meta,
     }
+
+
+def build_prior_prompt_anchors_from_masks(
+    masks_u8: list[np.ndarray],
+    frame_shape: tuple[int, int],
+    max_anchors: int,
+    max_prompts_per_anchor: int,
+    min_area_ratio: float = 1e-6,
+    min_anchor_gap_ratio: float = 0.16,
+    fallback_frames: list[np.ndarray] | None = None,
+    source_name: str = "prior",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    h, w = frame_shape
+    frame_count = len(masks_u8)
+    min_area_px = max(1, int(round(float(min_area_ratio) * float(h * w))))
+    max_anchors = max(1, int(max_anchors))
+    max_prompts_per_anchor = max(1, int(max_prompts_per_anchor))
+    min_gap = int(round(float(min_anchor_gap_ratio) * max(1, frame_count - 1)))
+
+    candidates: list[dict[str, Any]] = []
+    for idx, mask in enumerate(masks_u8):
+        binary = (np.asarray(mask) > 0).astype(np.uint8)
+        total_area = int(binary.sum())
+        if total_area <= 0:
+            continue
+        num_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        comps: list[tuple[int, tuple[int, int, int, int]]] = []
+        for label in range(1, int(num_labels)):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area < min_area_px:
+                continue
+            x = int(stats[label, cv2.CC_STAT_LEFT])
+            y = int(stats[label, cv2.CC_STAT_TOP])
+            bw = int(stats[label, cv2.CC_STAT_WIDTH])
+            bh = int(stats[label, cv2.CC_STAT_HEIGHT])
+            comps.append((area, (x, y, x + bw - 1, y + bh - 1)))
+        if comps:
+            candidates.append(
+                {
+                    "frame_idx": int(idx),
+                    "total_area": float(total_area),
+                    "components": sorted(comps, key=lambda item: item[0], reverse=True),
+                }
+            )
+
+    selected: list[dict[str, Any]] = []
+    for cand in sorted(candidates, key=lambda item: float(item["total_area"]), reverse=True):
+        if min_gap > 0 and any(abs(int(cand["frame_idx"]) - int(prev["frame_idx"])) < min_gap for prev in selected):
+            continue
+        boxes = [box for _area, box in cand["components"][:max_prompts_per_anchor]]
+        if boxes:
+            selected.append(
+                {
+                    "frame_idx": int(cand["frame_idx"]),
+                    "boxes": [tuple(int(v) for v in box) for box in boxes],
+                    "source": f"{source_name}_connected_components",
+                    "total_area": float(cand["total_area"]),
+                    "prompt_box_count": int(len(boxes)),
+                }
+            )
+        if len(selected) >= max_anchors:
+            break
+
+    if not selected:
+        fallback = build_motion_fallback_box(fallback_frames or [])
+        if fallback is not None:
+            selected.append(
+                {
+                    "frame_idx": 0,
+                    "boxes": [fallback],
+                    "source": "motion_fallback",
+                    "total_area": 0.0,
+                    "prompt_box_count": 1,
+                }
+            )
+
+    if not selected:
+        for idx, mask in enumerate(masks_u8):
+            box = mask_to_bbox((np.asarray(mask) > 0).astype(np.uint8) * 255)
+            if box is not None:
+                selected.append(
+                    {
+                        "frame_idx": int(idx),
+                        "boxes": [box],
+                        "source": f"{source_name}_union_bbox",
+                        "total_area": float((np.asarray(mask) > 0).sum()),
+                        "prompt_box_count": 1,
+                    }
+                )
+                break
+
+    if not selected and fallback_frames:
+        fh, fw = fallback_frames[0].shape[:2]
+        selected.append(
+            {
+                "frame_idx": 0,
+                "boxes": [(int(fw * 0.3), int(fh * 0.3), int(fw * 0.7), int(fh * 0.8))],
+                "source": "center_fallback",
+                "total_area": 0.0,
+                "prompt_box_count": 1,
+            }
+        )
+
+    meta = {
+        "source": source_name,
+        "anchor_count": int(len(selected)),
+        "anchor_frames": [int(x["frame_idx"]) for x in selected],
+        "max_anchors": int(max_anchors),
+        "max_prompts_per_anchor": int(max_prompts_per_anchor),
+        "min_prompt_area_ratio": float(min_area_ratio),
+        "min_anchor_gap_ratio": float(min_anchor_gap_ratio),
+        "min_anchor_gap_frames": int(min_gap),
+    }
+    return selected, meta
 
 
 def prepare_sam2_video_input_dir(payload: DatasetPayload) -> tuple[Path, bool]:
@@ -949,11 +1098,15 @@ def try_run_sam2_official(
     part2_cfg: dict[str, Any],
     backend_env: dict[str, dict[str, Any]],
     device: str,
+    propagation_mode: str = "bidirectional_no_wrap",
 ) -> tuple[list[np.ndarray] | None, dict[str, Any]]:
     meta: dict[str, Any] = {
         "backend": "sam2",
         "official_attempted": True,
         "official_used": False,
+        "prompt_frame_idx": int(prompt_frame_idx),
+        "propagation_mode": propagation_mode,
+        "reverse_used": propagation_mode == "bidirectional_no_wrap",
     }
 
     if not prompt_boxes:
@@ -1049,28 +1202,55 @@ def try_run_sam2_official(
 
                 h, w = payload.frames[0].shape[:2]
                 masks_u8 = [np.zeros((h, w), dtype=np.uint8) for _ in payload.frames]
-                for out in predictor.propagate_in_video(state):
-                    if not isinstance(out, (list, tuple)) or len(out) < 3:
-                        continue
-                    frame_idx, _obj_ids, mask_logits = out[0], out[1], out[2]
-                    idx = int(frame_idx)
-                    if idx < 0 or idx >= len(masks_u8):
-                        continue
-                    arr = mask_logits
-                    if hasattr(arr, "detach"):
-                        arr = arr.detach().cpu().numpy()
-                    arr_np = np.asarray(arr)
-                    frame_mask = np.zeros((h, w), dtype=np.uint8)
-                    if arr_np.ndim == 2:
-                        frame_mask = (arr_np > 0).astype(np.uint8) * 255
-                    else:
-                        for m in arr_np:
-                            m2 = m[0] if getattr(m, "ndim", 0) == 3 else m
-                            frame_mask = np.maximum(
-                                frame_mask,
-                                (np.asarray(m2) > 0).astype(np.uint8) * 255,
-                            )
-                    masks_u8[idx] = frame_mask
+
+                def absorb_outputs(iterator: Any, label: str) -> int:
+                    count = 0
+                    for out in iterator:
+                        if not isinstance(out, (list, tuple)) or len(out) < 3:
+                            continue
+                        frame_idx, _obj_ids, mask_logits = out[0], out[1], out[2]
+                        idx = int(frame_idx)
+                        if idx < 0 or idx >= len(masks_u8):
+                            continue
+                        arr = mask_logits
+                        if hasattr(arr, "detach"):
+                            arr = arr.detach().cpu().numpy()
+                        arr_np = np.asarray(arr)
+                        frame_mask = np.zeros((h, w), dtype=np.uint8)
+                        if arr_np.ndim == 2:
+                            frame_mask = (arr_np > 0).astype(np.uint8) * 255
+                        else:
+                            for m in arr_np:
+                                m2 = m[0] if getattr(m, "ndim", 0) == 3 else m
+                                frame_mask = np.maximum(
+                                    frame_mask,
+                                    (np.asarray(m2) > 0).astype(np.uint8) * 255,
+                                )
+                        masks_u8[idx] = np.maximum(masks_u8[idx], frame_mask)
+                        count += 1
+                    meta[f"{label}_frame_count"] = int(count)
+                    return count
+
+                try:
+                    forward_iter = predictor.propagate_in_video(
+                        state,
+                        start_frame_idx=int(prompt_frame_idx),
+                        reverse=False,
+                    )
+                except TypeError:
+                    forward_iter = predictor.propagate_in_video(state)
+                absorb_outputs(forward_iter, "forward")
+
+                if propagation_mode == "bidirectional_no_wrap" and int(prompt_frame_idx) > 0:
+                    try:
+                        reverse_iter = predictor.propagate_in_video(
+                            state,
+                            start_frame_idx=int(prompt_frame_idx),
+                            reverse=True,
+                        )
+                        absorb_outputs(reverse_iter, "reverse")
+                    except TypeError:
+                        meta["reverse_error"] = "sam2_api_no_reverse_args"
         finally:
             if cleanup_sam2_video_dir:
                 shutil.rmtree(sam2_video_dir, ignore_errors=True)
@@ -1161,7 +1341,7 @@ def build_prompt_order(frame_count: int, prompt_frame_idx: int) -> list[int]:
     if frame_count <= 0:
         return []
     start = max(0, min(frame_count - 1, int(prompt_frame_idx)))
-    return list(range(start, frame_count)) + list(range(0, start))
+    return list(range(start, frame_count))
 
 
 def run_trackanything_xmem_tracker(
@@ -1171,42 +1351,47 @@ def run_trackanything_xmem_tracker(
     prompt_boxes: list[tuple[int, int, int, int]],
     prompt_frame_idx: int,
     device: str,
+    propagation_mode: str = "bidirectional_no_wrap",
 ) -> list[np.ndarray]:
     tracker_device = "cuda:0" if device == "cuda" else "cpu"
     if not payload.frames:
         return []
-    order = build_prompt_order(len(payload.frames), prompt_frame_idx=prompt_frame_idx)
-    frames_rgb = [cv2.cvtColor(payload.frames[idx], cv2.COLOR_BGR2RGB) for idx in order]
-    template = build_prompt_template_mask(payload.frames[order[0]].shape[:2], prompt_boxes)
+    orders = build_bidirectional_prompt_orders(
+        len(payload.frames),
+        prompt_frame_idx=prompt_frame_idx,
+        mode=propagation_mode,
+    )
+    prompt_frame_idx = max(0, min(len(payload.frames) - 1, int(prompt_frame_idx)))
+    template = build_prompt_template_mask(payload.frames[prompt_frame_idx].shape[:2], prompt_boxes)
+    h, w = payload.frames[0].shape[:2]
+    reordered = [np.zeros((h, w), dtype=np.uint8) for _ in payload.frames]
 
     with pushd(repo_path):
         base_tracker_mod = importlib.import_module("tracker.base_tracker")
         BaseTracker = getattr(base_tracker_mod, "BaseTracker")
         tracker = BaseTracker(str(ckpts["xmem"]), tracker_device, None, None)
         try:
-            masks_u8: list[np.ndarray] = []
-            for idx, frame in enumerate(frames_rgb):
-                if idx == 0:
-                    mask, _logit, _painted = tracker.track(frame, template)
-                else:
-                    mask, _logit, _painted = tracker.track(frame)
-                masks_u8.append((np.asarray(mask) > 0).astype(np.uint8) * 255)
+            for _direction, order in orders.items():
+                if not order:
+                    continue
+                try:
+                    tracker.clear_memory()
+                except Exception:
+                    pass
+                frames_rgb = [cv2.cvtColor(payload.frames[idx], cv2.COLOR_BGR2RGB) for idx in order]
+                for idx, frame in enumerate(frames_rgb):
+                    if idx == 0:
+                        mask, _logit, _painted = tracker.track(frame, template)
+                    else:
+                        mask, _logit, _painted = tracker.track(frame)
+                    frame_mask = (np.asarray(mask) > 0).astype(np.uint8) * 255
+                    reordered[order[idx]] = np.maximum(reordered[order[idx]], frame_mask)
         finally:
             try:
                 tracker.clear_memory()
             except Exception:
                 pass
 
-    h, w = payload.frames[0].shape[:2]
-    reordered = [np.zeros((h, w), dtype=np.uint8) for _ in payload.frames]
-    if masks_u8:
-        limit = min(len(order), len(masks_u8))
-        for ordered_idx in range(limit):
-            reordered[order[ordered_idx]] = masks_u8[ordered_idx]
-        if limit < len(order):
-            last = masks_u8[limit - 1]
-            for ordered_idx in range(limit, len(order)):
-                reordered[order[ordered_idx]] = last.copy()
     return reordered
 
 
@@ -1217,12 +1402,15 @@ def try_run_trackanything_official(
     part2_cfg: dict[str, Any],
     backend_env: dict[str, dict[str, Any]],
     device: str,
+    propagation_mode: str = "bidirectional_no_wrap",
 ) -> tuple[list[np.ndarray] | None, dict[str, Any]]:
     meta: dict[str, Any] = {
         "backend": "trackanything",
         "official_attempted": True,
         "official_used": False,
         "prompt_frame_idx": int(prompt_frame_idx),
+        "propagation_mode": propagation_mode,
+        "reverse_used": propagation_mode == "bidirectional_no_wrap",
     }
 
     if not prompt_boxes:
@@ -1280,25 +1468,36 @@ def try_run_trackanything_official(
                         str(ckpts["e2fgvi"]),
                         args_ns,
                     )
-                    order = build_prompt_order(len(payload.frames), prompt_frame_idx=prompt_frame_idx)
-                    frames_rgb = [cv2.cvtColor(payload.frames[idx], cv2.COLOR_BGR2RGB) for idx in order]
-                    template = build_prompt_template_mask(payload.frames[order[0]].shape[:2], prompt_boxes)
-                    masks, _logits, _painted = engine.generator(frames_rgb, template)
+                    orders = build_bidirectional_prompt_orders(
+                        len(payload.frames),
+                        prompt_frame_idx=prompt_frame_idx,
+                        mode=propagation_mode,
+                    )
+                    h, w = payload.frames[0].shape[:2]
+                    masks_u8 = [np.zeros((h, w), dtype=np.uint8) for _ in payload.frames]
+                    safe_prompt_idx = max(0, min(len(payload.frames) - 1, int(prompt_frame_idx)))
+                    template = build_prompt_template_mask(payload.frames[safe_prompt_idx].shape[:2], prompt_boxes)
+                    for direction, order in orders.items():
+                        if not order:
+                            continue
+                        try:
+                            engine.xmem.clear_memory()
+                        except Exception:
+                            pass
+                        frames_rgb = [cv2.cvtColor(payload.frames[idx], cv2.COLOR_BGR2RGB) for idx in order]
+                        masks, _logits, _painted = engine.generator(frames_rgb, template)
+                        ordered_masks = [((np.asarray(m) > 0).astype(np.uint8) * 255) for m in masks]
+                        limit = min(len(order), len(ordered_masks))
+                        for ordered_idx in range(limit):
+                            masks_u8[order[ordered_idx]] = np.maximum(
+                                masks_u8[order[ordered_idx]],
+                                ordered_masks[ordered_idx],
+                            )
+                        meta[f"{direction}_frame_count"] = int(limit)
                     try:
                         engine.xmem.clear_memory()
                     except Exception:
                         pass
-                    ordered_masks = [((np.asarray(m) > 0).astype(np.uint8) * 255) for m in masks]
-                    h, w = payload.frames[0].shape[:2]
-                    masks_u8 = [np.zeros((h, w), dtype=np.uint8) for _ in payload.frames]
-                    if ordered_masks:
-                        limit = min(len(order), len(ordered_masks))
-                        for ordered_idx in range(limit):
-                            masks_u8[order[ordered_idx]] = ordered_masks[ordered_idx]
-                        if limit < len(order):
-                            last = ordered_masks[limit - 1]
-                            for ordered_idx in range(limit, len(order)):
-                                masks_u8[order[ordered_idx]] = last.copy()
                     mode = "trackinganything_wrapper"
             except Exception as e:
                 wrapper_error = f"wrapper_error:{type(e).__name__}:{e}"
@@ -1313,6 +1512,7 @@ def try_run_trackanything_official(
                 prompt_boxes=prompt_boxes,
                 prompt_frame_idx=prompt_frame_idx,
                 device=device,
+                propagation_mode=propagation_mode,
             )
             mode = "xmem_tracker"
             if wrapper_error:
@@ -1354,36 +1554,90 @@ def generate_backend_masks_with_priority(
     backend_env: dict[str, dict[str, Any]],
     device: str,
     logger: logging.Logger,
+    prompt_anchors: list[dict[str, Any]] | None = None,
 ) -> tuple[list[np.ndarray], dict[str, Any]]:
-    official_masks: list[np.ndarray] | None = None
     official_meta: dict[str, Any]
+    prop_cfg = normalize_mask_propagation_cfg(part2_cfg)
+    propagation_mode = str(prop_cfg.get("mode", "bidirectional_no_wrap"))
+    anchors = prompt_anchors or [
+        {
+            "frame_idx": int(prompt_frame_idx),
+            "boxes": prompt_boxes,
+            "source": "legacy_prompt",
+            "prompt_box_count": len(prompt_boxes),
+        }
+    ]
+    anchors = [a for a in anchors if a.get("boxes")]
 
-    if backend == "sam2":
-        official_masks, official_meta = try_run_sam2_official(
-            payload=payload,
-            prompt_frame_idx=prompt_frame_idx,
-            prompt_boxes=prompt_boxes,
-            part2_cfg=part2_cfg,
-            backend_env=backend_env,
-            device=device,
-        )
-    elif backend == "trackanything":
-        official_masks, official_meta = try_run_trackanything_official(
-            payload=payload,
-            prompt_frame_idx=prompt_frame_idx,
-            prompt_boxes=prompt_boxes,
-            part2_cfg=part2_cfg,
-            backend_env=backend_env,
-            device=device,
-        )
-    else:
+    if backend not in {"sam2", "trackanything"}:
         raise ValueError(f"Unsupported backend: {backend}")
 
-    if official_masks is not None:
+    official_sequences: list[list[np.ndarray]] = []
+    anchor_results: list[dict[str, Any]] = []
+    last_meta: dict[str, Any] = {"official_error": "no_prompt_anchors"}
+
+    for anchor_idx, anchor in enumerate(anchors):
+        anchor_frame_idx = int(anchor.get("frame_idx", prompt_frame_idx))
+        anchor_boxes = [
+            tuple(int(v) for v in box)
+            for box in (anchor.get("boxes", []) or [])
+            if isinstance(box, (list, tuple)) and len(box) == 4
+        ]
+        if not anchor_boxes:
+            continue
+
+        if backend == "sam2":
+            official_masks, one_meta = try_run_sam2_official(
+                payload=payload,
+                prompt_frame_idx=anchor_frame_idx,
+                prompt_boxes=anchor_boxes,
+                part2_cfg=part2_cfg,
+                backend_env=backend_env,
+                device=device,
+                propagation_mode=propagation_mode,
+            )
+        else:
+            official_masks, one_meta = try_run_trackanything_official(
+                payload=payload,
+                prompt_frame_idx=anchor_frame_idx,
+                prompt_boxes=anchor_boxes,
+                part2_cfg=part2_cfg,
+                backend_env=backend_env,
+                device=device,
+                propagation_mode=propagation_mode,
+            )
+        one_meta["anchor_index"] = int(anchor_idx)
+        one_meta["anchor"] = anchor
+        anchor_results.append(one_meta)
+        last_meta = one_meta
+        if official_masks is not None and bool(one_meta.get("official_used", False)):
+            official_sequences.append(official_masks)
+
+    if official_sequences:
+        official_masks = merge_mask_sequences(
+            official_sequences,
+            frame_shape=payload.frames[0].shape[:2],
+            frame_count=len(payload.frames),
+        )
+        official_meta = {
+            "backend": backend,
+            "official_attempted": True,
+            "official_used": True,
+            "fallback_used": False,
+            "propagation_mode": propagation_mode,
+            "reverse_used": propagation_mode == "bidirectional_no_wrap",
+            "anchors": anchors,
+            "anchor_results": anchor_results,
+            "successful_anchor_count": int(len(official_sequences)),
+            "mean_mask_ratio": compute_mean_mask_ratio(official_masks),
+            "active_frame_ratio": compute_active_frame_ratio(official_masks),
+        }
         logger.info(
-            "Official backend succeeded: backend=%s ratio=%.6f",
+            "Official backend succeeded: backend=%s anchors=%s ratio=%.6f active=%.6f",
             backend,
+            len(official_sequences),
             compute_mean_mask_ratio(official_masks),
+            compute_active_frame_ratio(official_masks),
         )
         return official_masks, official_meta
 
@@ -1394,8 +1648,11 @@ def generate_backend_masks_with_priority(
         prompt_boxes=prompt_boxes,
     )
     fallback_meta["official_attempted"] = True
-    fallback_meta["official_error"] = official_meta.get("official_error", "unknown")
+    fallback_meta["official_error"] = last_meta.get("official_error", "unknown")
     fallback_meta["official_used"] = False
+    fallback_meta["propagation_mode"] = propagation_mode
+    fallback_meta["anchors"] = anchors
+    fallback_meta["anchor_results"] = anchor_results
     logger.warning(
         "Fallback activated (non-silent): backend=%s reason=%s",
         backend,
@@ -1893,7 +2150,7 @@ def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tupl
     jr = metric_or_neg_inf(agg, "JR")
     q_remove = metric_or_neg_inf(agg, "Q_REMOVE")
 
-    if stage in {"B1", "B3"}:
+    if stage in {"B1", "B3", "B5"}:
         return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
     return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
 
@@ -2498,6 +2755,11 @@ def run_candidate(
                 for box in (prompt_meta_cache.get(ds, {}) or {}).get("boxes", [])
                 if isinstance(box, (list, tuple)) and len(box) == 4
             ]
+            prompt_anchors = [
+                a
+                for a in (prompt_meta_cache.get(ds, {}) or {}).get("anchors", [])
+                if isinstance(a, dict)
+            ]
             masks_u8, backend_meta = generate_backend_masks_with_priority(
                 backend=spec.mask_backend,
                 payload=payload,
@@ -2508,6 +2770,7 @@ def run_candidate(
                 backend_env=backend_env,
                 device=device,
                 logger=logger,
+                prompt_anchors=prompt_anchors,
             )
             backend_mask_cache[cache_key] = ([m.copy() for m in masks_u8], dict(backend_meta))
 
@@ -2796,11 +3059,36 @@ def main() -> None:
         prompt_instances_cache[ds] = instances
 
         prompt_cfg = part2_cfg.get("prompt", {}) or {}
-        prompt_info = build_auto_prompts(
-            instances_per_frame=instances,
-            frames=payload.frames,
-            max_prompts=int(prompt_cfg.get("max_prompts", 3)),
+        prop_cfg = normalize_mask_propagation_cfg(part2_cfg)
+        prior_masks = union_instances_to_masks(instances, frame_shape=payload.frames[0].shape[:2])
+        anchors, anchor_meta = build_prior_prompt_anchors_from_masks(
+            masks_u8=prior_masks,
+            frame_shape=payload.frames[0].shape[:2],
+            max_anchors=int(prop_cfg.get("max_anchors", 3)),
+            max_prompts_per_anchor=int(
+                prop_cfg.get("max_prompts_per_anchor", prompt_cfg.get("max_prompts", 3))
+            ),
+            min_area_ratio=float(prop_cfg.get("min_prompt_area_ratio", 1e-6)),
+            min_anchor_gap_ratio=float(prop_cfg.get("min_anchor_gap_ratio", 0.16)),
+            fallback_frames=payload.frames,
+            source_name=actual_detector,
         )
+        if anchors:
+            first = anchors[0]
+            prompt_info = {
+                "frame_idx": int(first["frame_idx"]),
+                "boxes": first["boxes"],
+                "source": first["source"],
+                "max_area": float(first.get("total_area", 0.0)),
+                "anchors": anchors,
+                "anchor_meta": anchor_meta,
+            }
+        else:
+            prompt_info = build_auto_prompts(
+                instances_per_frame=instances,
+                frames=payload.frames,
+                max_prompts=int(prompt_cfg.get("max_prompts", 3)),
+            )
         prompt_meta[ds] = {
             "detector_requested": prompt_detector,
             "detector_used": actual_detector,
@@ -3148,8 +3436,12 @@ def main() -> None:
             "output_policy": output_policy,
             "mask_backends": mask_backends,
             "prompt_detector": prompt_detector,
+            "selection_primary_metric": str((selection_cfg.get("primary_metric", "mask"))),
+            "mask_propagation": normalize_mask_propagation_cfg(part2_cfg),
             "prompt_meta": prompt_meta,
             "backend_environment": backend_env,
+            "final_backend_meta": final_best.backend_meta,
+            "final_mask_stats": final_best.mask_stats,
             "propainter_environment": propainter_meta,
             "phase1_exp_id": phase1_exp_id,
             "phase1_compare_meta": a_vs_b_meta,

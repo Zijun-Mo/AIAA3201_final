@@ -2,6 +2,7 @@
 import argparse
 import csv
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +74,28 @@ def list_images(folder: Path) -> list[Path]:
     return sorted([p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTS])
 
 
+def list_images_recursive(folder: Path) -> list[Path]:
+    if not folder.exists() or not folder.is_dir():
+        return []
+    return sorted([p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS])
+
+
+def normalize_mask_frame_key(name: str) -> str:
+    stem = Path(name).stem.lower()
+    match = re.search(r"(?:frame[_-]?|^)(\d{1,8})(?=$|[_.-])", stem)
+    if match:
+        return f"frame_{int(match.group(1)):06d}"
+    return stem
+
+
+def build_gt_mask_index(gt_mask_dir: Path) -> dict[str, list[Path]]:
+    index: dict[str, list[Path]] = {}
+    for path in list_images_recursive(gt_mask_dir):
+        key = normalize_mask_frame_key(path.name)
+        index.setdefault(key, []).append(path)
+    return {key: sorted(paths) for key, paths in sorted(index.items())}
+
+
 def read_gray(path: Path) -> np.ndarray:
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -87,42 +110,58 @@ def read_color(path: Path) -> np.ndarray:
     return img
 
 
+def read_union_mask(paths: list[Path], target_shape: tuple[int, int] | None = None) -> np.ndarray:
+    if not paths:
+        raise ValueError("read_union_mask requires at least one mask path")
+
+    union: np.ndarray | None = None
+    for path in paths:
+        mask = read_gray(path)
+        if target_shape is not None and mask.shape != target_shape:
+            mask = cv2.resize(mask, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_NEAREST)
+        mask_bin = mask > 0
+        union = mask_bin if union is None else np.logical_or(union, mask_bin)
+
+    return (union.astype(np.uint8) * 255)
+
+
 def compute_mask_metrics(
     pred_masks: list[np.ndarray],
     pred_frame_names: list[str],
     gt_mask_dir: Path,
     threshold: float,
 ) -> tuple[dict | None, str | None]:
-    gt_paths = list_images(gt_mask_dir)
+    gt_index = build_gt_mask_index(gt_mask_dir)
+    gt_items = list(gt_index.items())
     if not pred_masks:
         return None, "pred masks empty"
-    if not gt_paths:
+    if not gt_items:
         return None, f"gt mask folder empty: {gt_mask_dir}"
 
-    gt_map = {p.name: p for p in gt_paths}
     pairs: list[tuple[np.ndarray, np.ndarray]] = []
     matched_by_name = 0
+    gt_parts_merged = 0
 
     for name, pm in zip(pred_frame_names, pred_masks):
-        gpath = gt_map.get(name)
-        if gpath is None:
+        gpaths = gt_index.get(normalize_mask_frame_key(name))
+        if not gpaths:
             continue
-        gm = read_gray(gpath)
-        if gm.shape != pm.shape[:2]:
-            gm = cv2.resize(gm, (pm.shape[1], pm.shape[0]), interpolation=cv2.INTER_NEAREST)
+        pm = np.asarray(pm)
+        gm = read_union_mask(gpaths, target_shape=pm.shape[:2])
         pairs.append((pm, gm))
         matched_by_name += 1
+        gt_parts_merged += len(gpaths)
 
     match_mode = "filename"
     if not pairs:
         match_mode = "index"
-        n = min(len(pred_masks), len(gt_paths))
+        n = min(len(pred_masks), len(gt_items))
         for idx in range(n):
             pm = np.asarray(pred_masks[idx])
-            gm = read_gray(gt_paths[idx])
-            if gm.shape != pm.shape[:2]:
-                gm = cv2.resize(gm, (pm.shape[1], pm.shape[0]), interpolation=cv2.INTER_NEAREST)
+            _, gpaths = gt_items[idx]
+            gm = read_union_mask(gpaths, target_shape=pm.shape[:2])
             pairs.append((pm, gm))
+            gt_parts_merged += len(gpaths)
 
     if not pairs:
         return None, "no usable mask pairs for JM/JR"
@@ -143,6 +182,7 @@ def compute_mask_metrics(
         "mask_frame_count": int(len(arr)),
         "mask_match_mode": match_mode,
         "mask_filename_matches": int(matched_by_name),
+        "gt_mask_parts_merged": int(gt_parts_merged),
     }
     return metrics, None
 
@@ -175,17 +215,14 @@ def save_visualizations(
         concat = cv2.hconcat([first_pred, gt_img])
         cv2.imwrite(str(out_dir / "sample_pred_vs_gt.png"), concat)
 
-    gt_masks = list_images(gt_mask_dir)
-    if pred_masks and gt_masks:
+    gt_mask_index = build_gt_mask_index(gt_mask_dir)
+    if pred_masks and gt_mask_index:
         pm = np.asarray(pred_masks[0])
         if pm.ndim == 3:
             pm = cv2.cvtColor(pm, cv2.COLOR_BGR2GRAY)
-        gm_map = {p.name: p for p in gt_masks}
-        gm_path = gm_map.get(pred_first_name) or gt_masks[0]
-        gm = read_gray(gm_path)
-
-        if pm.shape != gm.shape:
-            gm = cv2.resize(gm, (pm.shape[1], pm.shape[0]), interpolation=cv2.INTER_NEAREST)
+        gt_key = normalize_mask_frame_key(pred_first_name)
+        gt_paths = gt_mask_index.get(gt_key) or next(iter(gt_mask_index.values()))
+        gm = read_union_mask(gt_paths, target_shape=pm.shape[:2])
 
         pm3 = cv2.cvtColor(pm, cv2.COLOR_GRAY2BGR)
         gm3 = cv2.cvtColor(gm, cv2.COLOR_GRAY2BGR)

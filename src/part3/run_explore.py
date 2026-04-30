@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,11 +25,15 @@ if str(REPO_ROOT) not in sys.path:
 from src.part1.run_baseline import resolve_device, set_global_seed, str2bool, write_dataset_outputs
 from src.part2.run_sota import (
     DatasetPayload,
+    build_prior_prompt_anchors_from_masks,
     build_failure_case_index,
     collect_dataset_cfg,
     ensure_propainter_ready,
+    generate_backend_masks_with_priority,
     load_dataset_payload,
     metric_or_neg_inf,
+    normalize_mask_propagation_cfg,
+    probe_backend_environment,
     read_json,
     read_yaml,
     resolve_dataset_names,
@@ -47,8 +51,17 @@ from src.common.video_io import (
     load_masks_by_names_with_video_fallback,
     resolve_output_policy,
 )
+from src.part3.motion_flow import (
+    apply_trajectory_consistency,
+    compute_video_flow_consistency,
+    compute_video_instance_motion_scores,
+    compute_video_motion_maps,
+    mask_flow_reliability,
+)
+from src.part3.mask_fusion import SUPPORTED_FUSION_METHODS, apply_fusion
+from src.part3.vggt_prior import generate_vggt4d_dynamic_priors
 
-SUPPORTED_STAGES = ["E1", "E2", "E3", "E4"]
+SUPPORTED_STAGES = ["E1", "E2", "E3", "E4", "F1", "F2", "F3", "F4", "F5"]
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 
 
@@ -60,6 +73,11 @@ class CandidateSpec:
     e1_profile: dict[str, Any]
     temporal_window: int
     use_sam3: bool
+    f_source_key: str = ""
+    f_fusion_method: str = ""
+    f_fusion_cfg: dict[str, Any] = field(default_factory=dict)
+    f_trajectory_cfg: dict[str, Any] = field(default_factory=dict)
+    f_use_bidirectional: bool = False
 
     @property
     def candidate_id(self) -> str:
@@ -140,6 +158,137 @@ def compute_active_frame_ratio(masks_u8: list[np.ndarray]) -> float:
         return 0.0
     active = [1.0 if int((np.asarray(m) > 0).sum()) > 0 else 0.0 for m in masks_u8]
     return float(np.mean(np.array(active, dtype=np.float32)))
+
+
+def mask_bbox(mask_u8: np.ndarray) -> tuple[int, int, int, int] | None:
+    ys, xs = np.where(np.asarray(mask_u8) > 0)
+    if ys.size == 0 or xs.size == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+
+
+def build_prior_prompt_from_masks(
+    masks_u8: list[np.ndarray],
+    frame_shape: tuple[int, int],
+    max_prompts: int,
+    min_area_ratio: float = 1e-6,
+) -> tuple[int, list[tuple[int, int, int, int]], list[list[dict[str, Any]]], dict[str, Any]]:
+    """Compatibility wrapper around the shared Phase2 prior prompt builder."""
+    h, w = frame_shape
+    binary_masks = [ensure_binary_mask(np.asarray(m), (h, w)) for m in masks_u8]
+    instances_per_frame: list[list[dict[str, Any]]] = []
+    for mask in binary_masks:
+        num_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+        frame_instances: list[dict[str, Any]] = []
+        for label in range(1, int(num_labels)):
+            comp_mask = ((labels == label).astype(np.uint8) * 255)
+            frame_instances.append({"mask": comp_mask, "score": 1.0, "class_name": "vggt4d_prior"})
+        instances_per_frame.append(frame_instances)
+
+    anchors, anchor_meta = build_prior_prompt_anchors_from_masks(
+        masks_u8=binary_masks,
+        frame_shape=frame_shape,
+        max_anchors=1,
+        max_prompts_per_anchor=max_prompts,
+        min_area_ratio=min_area_ratio,
+        min_anchor_gap_ratio=0.0,
+        source_name="vggt4d",
+    )
+    if not anchors:
+        meta = {
+            "prompt_source": "empty",
+            "prompt_frame_idx": 0,
+            "prompt_boxes": [],
+            "prompt_box_count": 0,
+            "max_area": 0.0,
+            "min_area_ratio": float(min_area_ratio),
+            "max_prompts": int(max_prompts),
+            "anchor_meta": anchor_meta,
+        }
+        return 0, [], instances_per_frame, meta
+
+    first = anchors[0]
+    boxes = [tuple(int(v) for v in box) for box in first.get("boxes", [])]
+    meta = {
+        "prompt_source": first.get("source", "vggt4d_connected_components"),
+        "prompt_frame_idx": int(first["frame_idx"]),
+        "prompt_boxes": [list(map(int, box)) for box in boxes],
+        "prompt_box_count": int(len(boxes)),
+        "max_area": float(first.get("total_area", 0.0)),
+        "min_area_ratio": float(min_area_ratio),
+        "max_prompts": int(max_prompts),
+        "anchor_meta": anchor_meta,
+    }
+    return int(first["frame_idx"]), boxes, instances_per_frame, meta
+
+
+def run_bbest_backend_postprocess_on_prior(
+    *,
+    dataset_name: str,
+    payload: DatasetPayload,
+    prior_masks_u8: list[np.ndarray],
+    backend: str,
+    part2_cfg: dict[str, Any],
+    backend_env: dict[str, dict[str, Any]],
+    device: str,
+    max_prompts: int,
+    min_area_ratio: float,
+) -> tuple[list[np.ndarray], dict[str, Any]]:
+    backend_key = backend.strip().lower()
+    prop_cfg = normalize_mask_propagation_cfg(part2_cfg)
+    anchors, anchor_meta = build_prior_prompt_anchors_from_masks(
+        masks_u8=prior_masks_u8,
+        frame_shape=payload.frames[0].shape[:2],
+        max_anchors=int(prop_cfg.get("max_anchors", 3)),
+        max_prompts_per_anchor=max_prompts,
+        min_area_ratio=min_area_ratio,
+        min_anchor_gap_ratio=float(prop_cfg.get("min_anchor_gap_ratio", 0.16)),
+        fallback_frames=payload.frames,
+        source_name="vggt4d",
+    )
+    meta: dict[str, Any] = {
+        "bbest_backend": backend_key,
+        "prompt_meta": anchor_meta,
+        "anchors": anchors,
+        "official_used": False,
+    }
+    if not anchors:
+        raise CandidateExecutionError(f"VGGT4D prior could not produce prompt boxes for dataset={dataset_name}")
+
+    if backend_key not in {"sam2", "trackanything"}:
+        raise CandidateExecutionError(f"Unsupported B-best mask backend for Route F: {backend}")
+
+    prompt_frame_idx = int(anchors[0].get("frame_idx", 0))
+    prompt_boxes = [tuple(int(v) for v in box) for box in anchors[0].get("boxes", [])]
+    instances = [[{"mask": m, "score": 1.0, "class_name": "vggt4d_prior"}] for m in prior_masks_u8]
+    masks, official_meta = generate_backend_masks_with_priority(
+        backend=backend_key,
+        payload=payload,
+        detector_instances=instances,
+        prompt_frame_idx=prompt_frame_idx,
+        prompt_boxes=prompt_boxes,
+        prompt_anchors=anchors,
+        part2_cfg=part2_cfg,
+        backend_env=backend_env,
+        device=device,
+        logger=logging.getLogger("phase3"),
+    )
+    meta["backend_meta"] = official_meta
+    if masks is None or not bool(official_meta.get("official_used", False)):
+        reason = official_meta.get("official_error", "unknown")
+        raise CandidateExecutionError(
+            f"B-best backend postprocess failed for dataset={dataset_name}, backend={backend_key}, reason={reason}"
+        )
+
+    out = align_masks_to_frame_count(
+        masks_u8=masks,
+        frame_count=len(payload.frame_names),
+        frame_shape=payload.frames[0].shape[:2],
+    )
+    meta["official_used"] = True
+    meta["mean_mask_ratio"] = compute_mean_mask_ratio(out)
+    meta["active_frame_ratio"] = compute_active_frame_ratio(out)
+    return out, meta
 
 
 def normalize_odd_kernel(value: int) -> int:
@@ -458,6 +607,15 @@ def parse_selection_excludes(arg_value: str | None, cfg_excludes: list[Any]) -> 
     return [str(x).strip() for x in cfg_excludes if str(x).strip()]
 
 
+def normalize_selection_primary_metric(value: Any, default: str = "auto") -> str:
+    mode = str(value if value is not None else default).strip().lower()
+    if mode not in {"mask", "quality", "auto"}:
+        mode = str(default).strip().lower()
+    if mode not in {"mask", "quality", "auto"}:
+        mode = "auto"
+    return mode
+
+
 def dataset_metric_aggregate(
     per_dataset: dict[str, Any],
     datasets_for_scoring: list[str] | None,
@@ -484,11 +642,21 @@ def dataset_metric_aggregate(
     }
 
 
-def stage_score(stage: str, agg: dict[str, float], mean_mask_ratio: float) -> tuple[float, float, float, float]:
+def stage_score(
+    stage: str,
+    agg: dict[str, float],
+    mean_mask_ratio: float,
+    primary_metric: str = "auto",
+) -> tuple[float, float, float, float]:
     jm = float(agg.get("JM", float("-inf")))
     jr = float(agg.get("JR", float("-inf")))
     q_remove = float(agg.get("Q_REMOVE", float("-inf")))
-    if stage in {"E1", "E2", "E3"}:
+    mode = normalize_selection_primary_metric(primary_metric, default="auto")
+    if mode == "mask":
+        return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
+    if mode == "quality":
+        return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
+    if stage in {"E1", "E2", "E3", "F1", "F2", "F3"}:
         return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
     return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
 
@@ -548,6 +716,7 @@ def select_best(
     score_datasets: list[str],
     coverage_constraints: dict[str, dict[str, float]] | None = None,
     enforce_if_candidate_available: bool = True,
+    primary_metric: str = "auto",
     logger: logging.Logger | None = None,
 ) -> CandidateResult:
     if not entries:
@@ -583,9 +752,48 @@ def select_best(
         ]
         mean_ratio = float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
         agg = dataset_metric_aggregate(entry.per_dataset, score_datasets)
-        return stage_score(stage, agg, mean_ratio)
+        return stage_score(stage, agg, mean_ratio, primary_metric=primary_metric)
 
     return max(pool, key=score)
+
+
+def select_f_route_best(
+    entries: list[CandidateResult],
+    score_datasets: list[str],
+    coverage_constraints: dict[str, dict[str, float]] | None = None,
+    enforce_if_candidate_available: bool = True,
+    logger: logging.Logger | None = None,
+) -> CandidateResult:
+    """Select the final Route F output from successful F-stage winners.
+
+    Phase 4 is meant to export the VGGT4D-prior result. YOLO/B-best and fusion
+    candidates are ablations only, so final videos and final metrics must come
+    from a pure VGGT4D-prior candidate, not from the best-scoring fusion row.
+    """
+    vggt4d_entries = [
+        entry
+        for entry in entries
+        if entry.spec.f_source_key.strip().lower() == "vggt4d"
+    ]
+    if vggt4d_entries:
+        forced = select_best(
+            stage="F1",
+            entries=vggt4d_entries,
+            score_datasets=score_datasets,
+            coverage_constraints=None,
+            enforce_if_candidate_available=True,
+            primary_metric="mask",
+            logger=logger,
+        )
+        if logger is not None:
+            logger.info(
+                "[F-best] force VGGT4D-prior final output: candidate=%s stage=%s",
+                forced.spec.name,
+                forced.spec.stage,
+            )
+        return forced
+
+    raise ValueError("Route F final output requires a successful VGGT4D-prior candidate (f_source_key=vggt4d)")
 
 
 def resolve_phase2_reference(
@@ -758,6 +966,7 @@ def write_ablation_outputs(
     all_results: list[CandidateResult],
     stage_best_map: dict[str, CandidateResult],
     final_best: CandidateResult,
+    phase_label: str = "phase3",
 ) -> tuple[Path, Path]:
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
@@ -781,6 +990,8 @@ def write_ablation_outputs(
             "dilation_kernel": r.spec.e1_profile.get("dilation_kernel", ""),
             "smoothing_kernel": r.spec.e1_profile.get("smoothing_kernel", ""),
             "temporal_window": r.spec.temporal_window,
+            "f_source_key": r.spec.f_source_key,
+            "f_fusion_method": r.spec.f_fusion_method,
             "JM": r.aggregate.get("JM"),
             "JR": r.aggregate.get("JR"),
             "ROS": r.aggregate.get("ROS"),
@@ -796,7 +1007,7 @@ def write_ablation_outputs(
         }
         rows.append(row)
 
-    csv_path = metrics_dir / "phase3_ablation.csv"
+    csv_path = metrics_dir / f"{phase_label}_ablation.csv"
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(
             f,
@@ -810,6 +1021,8 @@ def write_ablation_outputs(
                 "dilation_kernel",
                 "smoothing_kernel",
                 "temporal_window",
+                "f_source_key",
+                "f_fusion_method",
                 "JM",
                 "JR",
                 "ROS",
@@ -827,7 +1040,7 @@ def write_ablation_outputs(
         writer.writeheader()
         writer.writerows(rows)
 
-    selection_path = metrics_dir / "phase3_selection.json"
+    selection_path = metrics_dir / f"{phase_label}_selection.json"
     write_json(
         selection_path,
         {
@@ -938,23 +1151,95 @@ def write_b_vs_e_comparison(
     return out_path, meta
 
 
+def write_b_vs_f_comparison(
+    metrics_dir: Path,
+    phase2_summary: dict[str, Any],
+    phase2_ref_token: str,
+    phase4_summary: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    b_ds = phase2_summary.get("datasets", {}) or {}
+    f_ds = phase4_summary.get("datasets", {}) or {}
+
+    rows: list[dict[str, Any]] = []
+    names = sorted(set(b_ds.keys()) | set(f_ds.keys()))
+    metric_keys = ["JM", "JR", "ROS", "TCF", "BES", "Q_REMOVE"]
+    for ds in names:
+        bm = (b_ds.get(ds, {}) or {}).get("metrics", {}) or {}
+        fm = (f_ds.get(ds, {}) or {}).get("metrics", {}) or {}
+        row: dict[str, Any] = {"dataset": ds}
+        for key in metric_keys:
+            row[f"B_{key}"] = bm.get(key)
+            row[f"F_{key}"] = fm.get(key)
+            if bm.get(key) is not None and fm.get(key) is not None:
+                row[f"delta_{key}"] = float(fm[key]) - float(bm[key])
+            else:
+                row[f"delta_{key}"] = None
+        rows.append(row)
+
+    b_agg = phase2_summary.get("aggregate", {}) or {}
+    f_agg = phase4_summary.get("aggregate", {}) or {}
+    agg_row: dict[str, Any] = {"dataset": "__aggregate__"}
+    for key in metric_keys:
+        agg_row[f"B_{key}"] = b_agg.get(key)
+        agg_row[f"F_{key}"] = f_agg.get(key)
+        if b_agg.get(key) is not None and f_agg.get(key) is not None:
+            agg_row[f"delta_{key}"] = float(f_agg[key]) - float(b_agg[key])
+        else:
+            agg_row[f"delta_{key}"] = None
+    rows.append(agg_row)
+
+    fieldnames = ["dataset"]
+    for key in metric_keys:
+        fieldnames.extend([f"B_{key}", f"F_{key}", f"delta_{key}"])
+
+    out_path = metrics_dir / "phase4_b_vs_f.csv"
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return out_path, {"status": "ok", "phase2_reference": phase2_ref_token}
+
+
+def write_phase4_mask_priors(
+    metrics_dir: Path,
+    rows: list[dict[str, Any]],
+) -> Path:
+    out_path = metrics_dir / "phase4_mask_priors.csv"
+    fields = [
+        "dataset",
+        "prior",
+        "mean_mask_ratio",
+        "active_frame_ratio",
+        "frame_count",
+        "source",
+    ]
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fields})
+    return out_path
+
+
 def write_acceptance_report(
     report_path: Path,
     exp_id: str,
+    phase_label: str,
     aggregate: dict[str, Any],
     stage_best_map: dict[str, CandidateResult],
     final_best: CandidateResult,
     per_dataset: dict[str, Any],
     phase2_ref_token: str,
-    b_vs_e_csv: Path,
+    compare_csv: Path,
     failure_explained_csv: Path,
     seed: int,
     selection_datasets: list[str],
     e3_permission_meta: dict[str, Any],
     e3_skipped_reason: str | None,
+    priors_csv: Path | None = None,
 ) -> None:
     lines: list[str] = []
-    lines.append(f"# Phase 3 Acceptance Report: `{exp_id}`")
+    lines.append(f"# {phase_label.upper()} Acceptance Report: `{exp_id}`")
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
@@ -979,12 +1264,19 @@ def write_acceptance_report(
         )
     lines.append("")
 
-    lines.append("## Final E-best")
+    lines.append("## Final Best")
     lines.append("")
     s = final_best.spec
     lines.append(
         f"- `{s.name}`: source={s.source_stage}, use_sam3={s.use_sam3}, profile={s.e1_profile}, temporal_window={s.temporal_window}"
     )
+    if s.stage.startswith("F"):
+        if s.f_source_key.strip().lower() == "vggt4d":
+            lines.append(
+                f"- Route decision: final output forced to pure VGGT4D prior result -> `{s.stage}/{s.name}`"
+            )
+        else:
+            lines.append(f"- Route decision: invalid F-final candidate without VGGT4D prior key -> `{s.stage}/{s.name}`")
     lines.append("")
 
     lines.append("## Per-Dataset Metrics")
@@ -998,10 +1290,12 @@ def write_acceptance_report(
         )
     lines.append("")
 
-    lines.append("## B-best vs B+E")
+    lines.append("## B-best Comparison")
     lines.append("")
     lines.append(f"- Phase2 reference: `{phase2_ref_token}`")
-    lines.append(f"- Comparison CSV: `{b_vs_e_csv}`")
+    lines.append(f"- Comparison CSV: `{compare_csv}`")
+    if priors_csv is not None:
+        lines.append(f"- Mask priors CSV: `{priors_csv}`")
     lines.append("")
 
     lines.append("## Runtime Notes")
@@ -1019,7 +1313,7 @@ def write_acceptance_report(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Part3 exploration pipeline (E1-E4).")
+    parser = argparse.ArgumentParser(description="Run Part3 exploration pipeline (E/F routes).")
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
     parser.add_argument("--datasets", type=str, default="mandatory", help="mandatory | all | csv")
     parser.add_argument("--exp-id", type=str, default=None)
@@ -1033,6 +1327,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam3-env-name", type=str, default=None)
     parser.add_argument("--strict-sam3-permission", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--phase", type=str, default=None, help="phase3 | phase4 | auto (detect from stages)")
+    parser.add_argument(
+        "--phase4-bbest-backend-override",
+        type=str,
+        default=None,
+        help="Experimental Route F backend override: sam2|trackanything. Default follows Phase2 B-best.",
+    )
     return parser.parse_args()
 
 
@@ -1051,6 +1352,10 @@ def run_candidate(
     sam3_cfg: dict[str, Any],
     output_policy: dict[str, Any],
     logger: logging.Logger,
+    motion_maps: dict[str, list[np.ndarray]] | None = None,
+    motion_scores: dict[str, list[float]] | None = None,
+    flow_consistency_maps: dict[str, list[np.ndarray]] | None = None,
+    external_masks_by_dataset: dict[str, list[np.ndarray]] | None = None,
 ) -> tuple[Path, dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, list[np.ndarray]]]:
     candidate_root = out_root / spec.stage / spec.candidate_id
     candidate_root.mkdir(parents=True, exist_ok=True)
@@ -1160,6 +1465,80 @@ def run_candidate(
         elif spec.stage == "E4":
             # E4 uses anchor masks directly and focuses on final rendering/evaluation.
             pass
+
+        elif spec.stage == "F1":
+            # F1: final Route F path with postprocessed VGGT4D prior.
+            ds_meta["f1_prior_key"] = spec.f_source_key or "vggt4d"
+
+        elif spec.stage == "F2":
+            # F2: unchanged B-best baseline.
+            ds_meta["f2_prior_key"] = spec.f_source_key
+
+        elif spec.stage == "F3":
+            # F3: prior-fusion variants that inject VGGT4D cues on top of B-best baseline.
+            ds_mm = (motion_maps or {}).get(ds)
+            ds_ms = (motion_scores or {}).get(ds)
+            if ds_mm is None or ds_ms is None:
+                raise CandidateExecutionError(f"F3 requires motion priors for dataset={ds}")
+            method = spec.f_fusion_method.strip().lower() or "weighted"
+            if method not in SUPPORTED_FUSION_METHODS:
+                raise CandidateExecutionError(f"F3 unsupported fusion method={method}")
+            ext_masks = (external_masks_by_dataset or {}).get(ds)
+            if method == "vggt4d_guided" and ext_masks is None:
+                raise CandidateExecutionError(f"F3 method={method} requires external VGGT4D masks for dataset={ds}")
+            fused, fusion_meta = apply_fusion(
+                semantic_masks=masks_u8,
+                motion_maps=ds_mm,
+                motion_scores=ds_ms,
+                method=method,
+                fusion_cfg=spec.f_fusion_cfg,
+                external_masks=ext_masks,
+            )
+            masks_u8 = fused
+            ds_meta["fusion"] = fusion_meta
+
+        elif spec.stage == "F4":
+            ds_mm = (motion_maps or {}).get(ds)
+            ds_ms = (motion_scores or {}).get(ds)
+            ds_fc = (flow_consistency_maps or {}).get(ds)
+            if ds_mm is None or ds_ms is None:
+                raise CandidateExecutionError(f"F4 requires motion priors for dataset={ds}")
+
+            refined_mm = ds_mm
+            if spec.f_use_bidirectional and ds_fc is not None:
+                max_err = float(spec.f_fusion_cfg.get("max_consistency_error", 3.0))
+                refined_mm = [mask_flow_reliability(mm, fc, max_err) for mm, fc in zip(ds_mm, ds_fc)]
+                ds_meta["bidirectional_applied"] = True
+                ds_meta["max_consistency_error"] = max_err
+            else:
+                ds_meta["bidirectional_applied"] = False
+
+            method = spec.f_fusion_method.strip().lower() or "weighted"
+            ext_masks = (external_masks_by_dataset or {}).get(ds)
+            if method == "vggt4d_guided" and ext_masks is None:
+                method = "weighted"
+
+            fused, fusion_meta = apply_fusion(
+                semantic_masks=masks_u8,
+                motion_maps=refined_mm,
+                motion_scores=ds_ms,
+                method=method,
+                fusion_cfg=spec.f_fusion_cfg,
+                external_masks=ext_masks,
+            )
+            masks_u8 = fused
+            traj_masks, traj_meta = apply_trajectory_consistency(
+                masks_u8=masks_u8,
+                motion_scores=ds_ms,
+                trajectory_cfg=spec.f_trajectory_cfg,
+            )
+            masks_u8 = traj_masks
+            ds_meta["fusion"] = fusion_meta
+            ds_meta["trajectory"] = traj_meta
+
+        elif spec.stage == "F5":
+            # F5 finalization / case-study pass.
+            pass
         else:
             raise ValueError(f"Unsupported stage in run_candidate: {spec.stage}")
 
@@ -1230,9 +1609,12 @@ def run_candidate(
 
 def main() -> None:
     args = parse_args()
-    exp_id = args.exp_id or f"phase3_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    requested_stages = [s.strip().upper() for s in (args.stages or "").split(",") if s.strip()]
+    has_f_requested = any(s.startswith("F") for s in requested_stages)
+    default_phase_prefix = "phase4" if has_f_requested else "phase3"
+    exp_id = args.exp_id or f"{default_phase_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger, log_path = setup_logger(exp_id)
-    logger.info("Phase3 start | exp_id=%s", exp_id)
+    logger.info("%s start | exp_id=%s", default_phase_prefix.upper(), exp_id)
 
     config_path = resolve_repo_path(Path(args.config))
     config = read_yaml(config_path)
@@ -1281,10 +1663,55 @@ def main() -> None:
             "Run scripts/sync_best_aliases.sh or pass --phase2-exp-id."
         )
     logger.info("Phase2 reference token=%s pred_root=%s", phase2_ref_token, phase2_pred_root)
+    phase2_run_meta_path = phase2_metrics_root / "phase2_run_meta.json"
+    phase2_run_meta = read_json(phase2_run_meta_path) if phase2_run_meta_path.exists() else {}
+    phase2_final_spec = (phase2_run_meta.get("final_best", {}) or {}) if isinstance(phase2_run_meta, dict) else {}
+    bbest_mask_backend = str(phase2_final_spec.get("mask_backend", "")).strip().lower()
+    bbest_mask_variant = str(phase2_final_spec.get("mask_variant", "")).strip().lower()
+    bbest_mask_backend_original = bbest_mask_backend
+    bbest_mask_variant_original = bbest_mask_variant
+    bbest_backend_source = "phase2_final_best"
+    backend_override = str(args.phase4_bbest_backend_override or "").strip().lower()
+    if backend_override:
+        if backend_override not in {"sam2", "trackanything"}:
+            raise RuntimeError(
+                "--phase4-bbest-backend-override must be sam2 or trackanything; "
+                f"got {backend_override!r}"
+            )
+        bbest_mask_backend = backend_override
+        bbest_mask_variant = f"override_from_{bbest_mask_backend_original or 'unknown'}"
+        bbest_backend_source = "cli_override"
+    if any(stage.startswith("F") for stage in stages):
+        if bbest_mask_backend not in {"sam2", "trackanything"}:
+            raise RuntimeError(
+                f"Route F requires Phase2 final_best.mask_backend to be sam2 or trackanything; got {bbest_mask_backend!r}"
+            )
+        logger.info(
+            "Route F postprocess backend: backend=%s variant=%s source=%s original_backend=%s",
+            bbest_mask_backend,
+            bbest_mask_variant or "unknown",
+            bbest_backend_source,
+            bbest_mask_backend_original or "unknown",
+        )
 
     phase1_ref_token, phase1_metrics_root = resolve_phase1_reference(part3_cfg=part3_cfg)
 
     selection_cfg = part3_cfg.get("selection", {}) or {}
+    part2_selection_cfg = part2_cfg.get("selection", {}) or {}
+    selection_primary_metric_source = (
+        "part3.selection.primary_metric"
+        if "primary_metric" in selection_cfg
+        else "part2.selection.primary_metric"
+    )
+    selection_primary_metric = normalize_selection_primary_metric(
+        selection_cfg.get("primary_metric", part2_selection_cfg.get("primary_metric", "auto")),
+        default="auto",
+    )
+    logger.info(
+        "Selection primary metric=%s (source=%s)",
+        selection_primary_metric,
+        selection_primary_metric_source,
+    )
     excludes = parse_selection_excludes(
         arg_value=args.selection_exclude_datasets,
         cfg_excludes=(selection_cfg.get("exclude_datasets", []) or []),
@@ -1297,10 +1724,25 @@ def main() -> None:
 
     external_root = REPO_ROOT / "outputs" / "external" / "part3"
     external_root.mkdir(parents=True, exist_ok=True)
+    part2_external_root = REPO_ROOT / "outputs" / "external" / "part2"
+
+    f_bbest_backend_env: dict[str, dict[str, Any]] = {}
+    if any(stage.startswith("F") for stage in stages):
+        f_bbest_backend_env = probe_backend_environment(
+            backends=[bbest_mask_backend],
+            part2_cfg=part2_cfg,
+            external_root=part2_external_root,
+            auto_install_missing=auto_install_missing,
+            logger=logger,
+        )
+        if not bool((f_bbest_backend_env.get(bbest_mask_backend, {}) or {}).get("ready", False)):
+            raise RuntimeError(
+                f"Route F B-best backend is not ready: backend={bbest_mask_backend}, env={f_bbest_backend_env}"
+            )
 
     propainter_repo, propainter_meta = ensure_propainter_ready(
         part2_cfg=part2_cfg,
-        external_root=REPO_ROOT / "outputs" / "external" / "part2",
+        external_root=part2_external_root,
         auto_install_missing=auto_install_missing,
         logger=logger,
     )
@@ -1451,18 +1893,34 @@ def main() -> None:
     stage_best_masks: dict[str, dict[str, list[np.ndarray]]] = {}
 
     e3_skipped_reason: str | None = None
+    f_route_cfg = part3_cfg.get("f_route", {}) or {}
+    f_flow_cfg = f_route_cfg.get("flow", {}) or {}
+    f_fusion_grid_cfg = (f_route_cfg.get("fusion", {}) or {}).get("grid", []) or []
+    f_traj_grid_cfg = (f_route_cfg.get("trajectory", {}) or {}).get("grid", []) or []
+    f4_cfg = f_route_cfg.get("f4", {}) or {}
+    f_vggt4d_cfg = f_route_cfg.get("vggt4d", {}) or {}
+    f_motion_maps: dict[str, list[np.ndarray]] = {}
+    f_motion_scores: dict[str, list[float]] = {}
+    f_flow_consistency: dict[str, list[np.ndarray]] = {}
+    f1_prior_sources: dict[str, dict[str, list[np.ndarray]]] = {}
+    f1_external_masks: dict[str, list[np.ndarray]] = {}
+    f1_bbest_post_meta: dict[str, dict[str, Any]] = {}
+    f1_prior_rows: list[dict[str, Any]] = []
 
     def execute_stage(stage: str, specs: list[CandidateSpec], source_masks: dict[str, list[np.ndarray]]) -> CandidateResult:
         stage_results: list[CandidateResult] = []
         stage_masks: dict[str, dict[str, list[np.ndarray]]] = {}
 
         for spec in specs:
+            source_for_spec = source_masks
+            if spec.f_source_key and spec.f_source_key in f1_prior_sources:
+                source_for_spec = f1_prior_sources[spec.f_source_key]
             try:
                 c_root, mask_stats, stage_mask_meta, p_meta, produced_masks = run_candidate(
                     spec=spec,
                     datasets=selected_datasets,
                     dataset_payloads=dataset_payloads,
-                    source_masks_map=source_masks,
+                    source_masks_map=source_for_spec,
                     out_root=candidate_root,
                     part2_cfg=part2_cfg,
                     propainter_repo=propainter_repo,
@@ -1472,6 +1930,10 @@ def main() -> None:
                     sam3_cfg=sam3_cfg,
                     output_policy=output_policy,
                     logger=logger,
+                    motion_maps=f_motion_maps or None,
+                    motion_scores=f_motion_scores or None,
+                    flow_consistency_maps=f_flow_consistency or None,
+                    external_masks_by_dataset=f1_external_masks or None,
                 )
             except Exception as e:
                 logger.warning("Candidate failed: stage=%s candidate=%s reason=%s", stage, spec.name, str(e))
@@ -1528,6 +1990,7 @@ def main() -> None:
             score_datasets=selection_datasets,
             coverage_constraints=selection_coverage_constraints,
             enforce_if_candidate_available=enforce_selection_coverage,
+            primary_metric=selection_primary_metric,
             logger=logger,
         )
         stage_best_map[stage] = best
@@ -1539,6 +2002,11 @@ def main() -> None:
     best_e2: CandidateResult | None = None
     best_e3: CandidateResult | None = None
     best_e4: CandidateResult | None = None
+    best_f1: CandidateResult | None = None
+    best_f2: CandidateResult | None = None
+    best_f3: CandidateResult | None = None
+    best_f4: CandidateResult | None = None
+    best_f5: CandidateResult | None = None
 
     if "E1" in stages:
         e1_specs: list[CandidateSpec] = []
@@ -1627,9 +2095,283 @@ def main() -> None:
         ]
         best_e4 = execute_stage("E4", e4_specs, anchor_masks)
 
-    final_best = best_e4 or best_e3 or best_e2 or best_e1
+    has_f_stages = any(stage.startswith("F") for stage in stages)
+    if has_f_stages:
+        logger.info("=== Route F start ===")
+        f1_external_root = REPO_ROOT / "outputs" / "external" / "vggt4d" / exp_id
+        f1_external_root.mkdir(parents=True, exist_ok=True)
+
+        yolo_detector = DynamicObjectDetector(
+            backend_priority=["yolo"],
+            dynamic_classes=dynamic_classes,
+            yolo_model=str(seg_cfg.get("yolo_model", "yolov8n-seg.pt")),
+            yolo_conf=float(seg_cfg.get("yolo_conf_threshold", 0.25)),
+            yolo_imgsz=int(seg_cfg.get("yolo_imgsz", 960)),
+            maskrcnn_conf=float(seg_cfg.get("maskrcnn_conf_threshold", 0.5)),
+            device=device,
+        )
+
+        f1_prior_sources["yolo"] = {}
+        f1_prior_sources["vggt4d"] = {}
+        f1_prior_sources["vggt4d_yolo"] = {}
+
+        vggt4d_masks_map, vggt4d_meta = generate_vggt4d_dynamic_priors(
+            datasets_frames_bgr={ds: dataset_payloads[ds].frames for ds in selected_datasets},
+            output_root=f1_external_root,
+            cfg={**f_vggt4d_cfg, "device": device},
+            logger_obj=logger,
+        )
+        bbest_post_cfg = f_route_cfg.get("bbest_postprocess", {}) or {}
+        vggt_prior_max_prompts = int(
+            bbest_post_cfg.get("max_prompts", (part2_cfg.get("prompt", {}) or {}).get("max_prompts", 3))
+        )
+        vggt_prior_min_area_ratio = float(bbest_post_cfg.get("min_prompt_area_ratio", 1e-6))
+        f1_bbest_post_meta: dict[str, dict[str, Any]] = {}
+
+        for ds in selected_datasets:
+            payload = dataset_payloads[ds]
+            ds_h, ds_w = payload.frames[0].shape[:2]
+
+            yolo_masks: list[np.ndarray] = []
+            for frame in payload.frames:
+                m, _ = yolo_detector.detect_mask(frame)
+                yolo_masks.append(((m > 0).astype(np.uint8) * 255))
+
+            vggt4d_masks = vggt4d_masks_map.get(ds, [])
+
+            yolo_masks = align_masks_to_frame_count(yolo_masks, len(payload.frame_names), (ds_h, ds_w))
+            vggt4d_raw_masks = align_masks_to_frame_count(vggt4d_masks, len(payload.frame_names), (ds_h, ds_w))
+            vggt4d_masks, bbest_post_meta = run_bbest_backend_postprocess_on_prior(
+                dataset_name=ds,
+                payload=payload,
+                prior_masks_u8=vggt4d_raw_masks,
+                backend=bbest_mask_backend,
+                part2_cfg=part2_cfg,
+                backend_env=f_bbest_backend_env,
+                device=device,
+                max_prompts=vggt_prior_max_prompts,
+                min_area_ratio=vggt_prior_min_area_ratio,
+            )
+            f1_bbest_post_meta[ds] = bbest_post_meta
+            vggt4d_masks = align_masks_to_frame_count(vggt4d_masks, len(payload.frame_names), (ds_h, ds_w))
+            union_masks = [
+                (((np.asarray(a) > 0) | (np.asarray(b) > 0)).astype(np.uint8) * 255)
+                for a, b in zip(yolo_masks, vggt4d_masks)
+            ]
+
+            f1_prior_sources["yolo"][ds] = yolo_masks
+            f1_prior_sources["vggt4d"][ds] = vggt4d_masks
+            f1_prior_sources["vggt4d_yolo"][ds] = union_masks
+            f1_external_masks[ds] = vggt4d_masks
+
+            for name, masks, source_name in [
+                ("yolo", yolo_masks, "detector_yolo"),
+                ("vggt4d_raw", vggt4d_raw_masks, str(vggt4d_meta.get("backend", "vggt4d"))),
+                ("vggt4d", vggt4d_masks, f"vggt4d_with_bbest_backend_{bbest_mask_backend}"),
+                ("vggt4d_yolo", union_masks, "union"),
+            ]:
+                f1_prior_rows.append(
+                    {
+                        "dataset": ds,
+                        "prior": name,
+                        "mean_mask_ratio": compute_mean_mask_ratio(masks),
+                        "active_frame_ratio": compute_active_frame_ratio(masks),
+                        "frame_count": len(masks),
+                        "source": source_name,
+                    }
+                )
+
+            logger.info(
+                "[F1] %s priors ready | yolo=%.6f vggt4d_raw=%.6f vggt4d_prior=%.6f union=%.6f | bbest_backend=%s prompt_frame=%s boxes=%s",
+                ds,
+                compute_mean_mask_ratio(yolo_masks),
+                compute_mean_mask_ratio(vggt4d_raw_masks),
+                compute_mean_mask_ratio(vggt4d_masks),
+                compute_mean_mask_ratio(union_masks),
+                bbest_mask_backend,
+                bbest_post_meta.get("prompt_meta", {}).get("anchor_frames"),
+                bbest_post_meta.get("prompt_meta", {}).get("anchor_count"),
+            )
+            logger.info("[F1] %s B-best backend postprocess meta: %s", ds, bbest_post_meta)
+
+            compensate_global = bool(f_flow_cfg.get("compensate_global", True))
+            f_motion_maps[ds] = compute_video_motion_maps(payload.frames, f_flow_cfg, compensate_global=compensate_global)
+            f_motion_scores[ds] = compute_video_instance_motion_scores(
+                payload.frames,
+                b_masks_map[ds],
+                f_flow_cfg,
+                compensate_global=compensate_global,
+            )
+            if bool(f4_cfg.get("enable_bidirectional", True)):
+                farneback_cfg = (f_flow_cfg.get("farneback", {}) or {})
+                f_flow_consistency[ds] = compute_video_flow_consistency(payload.frames, farneback_cfg=farneback_cfg)
+
+        if "F1" in stages:
+            # F1: final Route F variant using postprocessed VGGT4D prior.
+            f1_specs = [
+                CandidateSpec(
+                    stage="F1",
+                    name="bbest_vggt4d_replace_yolo",
+                    source_stage="B",
+                    e1_profile={},
+                    temporal_window=0,
+                    use_sam3=False,
+                    f_source_key="vggt4d",
+                )
+            ]
+            best_f1 = execute_stage("F1", f1_specs, b_masks_map)
+
+        if "F2" in stages:
+            # F2: untouched B-best baseline for direct comparison.
+            f2_specs = [
+                CandidateSpec(
+                    stage="F2",
+                    name="bbest_baseline",
+                    source_stage="B",
+                    e1_profile={},
+                    temporal_window=0,
+                    use_sam3=False,
+                )
+            ]
+            best_f2 = execute_stage("F2", f2_specs, b_masks_map)
+
+        if "F3" in stages:
+            # F3: prior-fusion ablations only; never exported as Route F final output.
+            anchor_masks = stage_best_masks.get("F2") or b_masks_map
+            if not f_fusion_grid_cfg:
+                f_fusion_grid_cfg = [
+                    {"name": "vggt4d_guided", "method": "vggt4d_guided", "vggt4d_alpha": 0.35, "vggt4d_beta": 0.35, "vggt4d_threshold": 0.5},
+                    {"name": "weighted_a04", "method": "weighted", "weighted_alpha": 0.4, "weighted_threshold": 0.5},
+                    {"name": "weighted_a06", "method": "weighted", "weighted_alpha": 0.6, "weighted_threshold": 0.5},
+                    {"name": "intersection", "method": "intersection", "pixel_motion_threshold": 1.5},
+                    {"name": "union", "method": "union", "pixel_motion_threshold": 1.5},
+                ]
+            else:
+                has_vggt4d_guided = any(
+                    str(item.get("method", item.get("name", ""))).strip().lower() == "vggt4d_guided"
+                    for item in f_fusion_grid_cfg
+                    if isinstance(item, dict)
+                )
+                if not has_vggt4d_guided:
+                    f_fusion_grid_cfg = list(f_fusion_grid_cfg) + [
+                        {
+                            "name": "vggt4d_guided_auto",
+                            "method": "vggt4d_guided",
+                            "vggt4d_alpha": 0.35,
+                            "vggt4d_beta": 0.35,
+                            "vggt4d_threshold": 0.5,
+                        }
+                    ]
+            f3_specs: list[CandidateSpec] = []
+            for item in f_fusion_grid_cfg:
+                method = str(item.get("method", item.get("name", ""))).strip().lower()
+                if method not in SUPPORTED_FUSION_METHODS:
+                    continue
+                cfg_copy = {k: v for k, v in item.items() if k not in {"name", "method"}}
+                f3_specs.append(
+                    CandidateSpec(
+                        stage="F3",
+                        name=sanitize_name(str(item.get("name", method))),
+                        source_stage="F2",
+                        e1_profile={},
+                        temporal_window=0,
+                        use_sam3=False,
+                        f_fusion_method=method,
+                        f_fusion_cfg=cfg_copy,
+                    )
+                )
+            if not f3_specs:
+                raise RuntimeError("F3 fusion grid resolved to empty")
+            best_f3 = execute_stage("F3", f3_specs, anchor_masks)
+
+        if "F4" in stages:
+            anchor_masks = stage_best_masks.get("F3") or stage_best_masks.get("F2") or b_masks_map
+            if anchor_masks is None:
+                raise RuntimeError("F4 requires F3/F2/B masks")
+
+            f4_grid = f4_cfg.get("grid", []) or []
+            if not f4_grid:
+                f4_grid = [{"name": "bidir_e3.0", "max_consistency_error": float(f4_cfg.get("max_consistency_error", 3.0))}]
+            if not f_traj_grid_cfg:
+                f_traj_grid_cfg = [
+                    {"name": "balanced", "min_track_length": 3, "motion_smooth_window": 3, "track_motion_threshold": 1.5}
+                ]
+
+            best_fusion_method = "weighted"
+            best_fusion_cfg: dict[str, Any] = {}
+            if best_f3 is not None:
+                best_fusion_method = best_f3.spec.f_fusion_method or "weighted"
+                best_fusion_cfg = dict(best_f3.spec.f_fusion_cfg)
+
+            enable_bidir = bool(f4_cfg.get("enable_bidirectional", True))
+            f4_specs: list[CandidateSpec] = []
+            for grid_item in f4_grid:
+                for traj_item in f_traj_grid_cfg:
+                    merged_cfg = dict(best_fusion_cfg)
+                    merged_cfg["max_consistency_error"] = float(
+                        grid_item.get("max_consistency_error", f4_cfg.get("max_consistency_error", 3.0))
+                    )
+                    f4_specs.append(
+                        CandidateSpec(
+                            stage="F4",
+                            name=sanitize_name(f"{grid_item.get('name', 'f4')}_{traj_item.get('name', 'traj')}"),
+                            source_stage="F3" if stage_best_masks.get("F3") else ("F2" if stage_best_masks.get("F2") else "B"),
+                            e1_profile={},
+                            temporal_window=0,
+                            use_sam3=False,
+                            f_fusion_method=best_fusion_method,
+                            f_fusion_cfg=merged_cfg,
+                            f_trajectory_cfg={k: v for k, v in traj_item.items() if k != "name"},
+                            f_use_bidirectional=enable_bidir,
+                        )
+                    )
+            if not f4_specs:
+                raise RuntimeError("F4 grid resolved to empty")
+            best_f4 = execute_stage("F4", f4_specs, anchor_masks)
+
+        if "F5" in stages:
+            anchor_masks = (
+                stage_best_masks.get("F4")
+                or stage_best_masks.get("F3")
+                or stage_best_masks.get("F2")
+                or b_masks_map
+            )
+            if anchor_masks is None:
+                raise RuntimeError("F5 requires earlier F stages")
+
+            f5_specs = [
+                CandidateSpec(
+                    stage="F5",
+                    name="b_plus_f_finalize",
+                    source_stage="F4" if stage_best_masks.get("F4") else ("F3" if stage_best_masks.get("F3") else "F2"),
+                    e1_profile={},
+                    temporal_window=0,
+                    use_sam3=False,
+                )
+            ]
+            best_f5 = execute_stage("F5", f5_specs, anchor_masks)
+
+    f_stage_bests = [x for x in [best_f1, best_f2, best_f3, best_f4, best_f5] if x is not None]
+    f_final: CandidateResult | None = None
+    if f_stage_bests:
+        f_final = select_f_route_best(
+            entries=f_stage_bests,
+            score_datasets=selection_datasets,
+            coverage_constraints=selection_coverage_constraints,
+            enforce_if_candidate_available=enforce_selection_coverage,
+            logger=logger,
+        )
+        logger.info(
+            "[F-best] candidate=%s stage=%s source=%s",
+            f_final.spec.name,
+            f_final.spec.stage,
+            f_final.spec.source_stage,
+        )
+
+    e_final = best_e4 or best_e3 or best_e2 or best_e1
+    final_best = f_final or e_final
     if final_best is None:
-        raise RuntimeError("Phase3 finished without successful candidate")
+        raise RuntimeError("Part3 finished without successful candidate")
 
     copy_candidate_outputs(best_candidate_root=final_best.candidate_root, final_root=exp_pred_root, datasets=selected_datasets)
 
@@ -1644,12 +2386,14 @@ def main() -> None:
         logger=logger,
     )
 
+    phase_label = args.phase or ("phase4" if has_f_stages else "phase3")
     metrics_dir = REPO_ROOT / "outputs" / "metrics" / exp_id
     ablation_csv, selection_json = write_ablation_outputs(
         metrics_dir=metrics_dir,
         all_results=all_results,
         stage_best_map=stage_best_map,
         final_best=final_best,
+        phase_label=phase_label,
     )
 
     phase2_summary_path = phase2_metrics_root / "summary.json"
@@ -1665,6 +2409,20 @@ def main() -> None:
         phase2_ref_token=phase2_ref_token,
         phase3_summary=final_summary,
     )
+
+    b_vs_f_csv: Path | None = None
+    b_vs_f_meta: dict[str, Any] = {}
+    if has_f_stages:
+        b_vs_f_csv, b_vs_f_meta = write_b_vs_f_comparison(
+            metrics_dir=metrics_dir,
+            phase2_summary=phase2_summary,
+            phase2_ref_token=phase2_ref_token,
+            phase4_summary=final_summary,
+        )
+
+    priors_csv: Path | None = None
+    if has_f_stages and f1_prior_rows:
+        priors_csv = write_phase4_mask_priors(metrics_dir=metrics_dir, rows=f1_prior_rows)
 
     figures_dir = REPO_ROOT / "outputs" / "figures" / exp_id
     failure_csv, failure_explained_csv = build_failure_case_index(
@@ -1683,32 +2441,38 @@ def main() -> None:
         top_k=3,
     )
 
-    report_path = metrics_dir / "phase3_acceptance_report.md"
+    report_path = metrics_dir / f"{phase_label}_acceptance_report.md"
+    compare_csv = b_vs_f_csv if b_vs_f_csv is not None else b_vs_e_csv
     write_acceptance_report(
         report_path=report_path,
         exp_id=exp_id,
+        phase_label=phase_label,
         aggregate=final_summary.get("aggregate", {}),
         stage_best_map=stage_best_map,
         final_best=final_best,
         per_dataset=final_summary.get("datasets", {}),
         phase2_ref_token=phase2_ref_token,
-        b_vs_e_csv=b_vs_e_csv,
+        compare_csv=compare_csv,
         failure_explained_csv=failure_explained_csv,
         seed=seed_value,
         selection_datasets=selection_datasets,
         e3_permission_meta=e3_permission_meta,
         e3_skipped_reason=e3_skipped_reason,
+        priors_csv=priors_csv,
     )
 
     write_json(
-        metrics_dir / "phase3_run_meta.json",
+        metrics_dir / f"{phase_label}_run_meta.json",
         {
             "exp_id": exp_id,
+            "phase_label": phase_label,
             "generated_at_utc": datetime.utcnow().isoformat() + "Z",
             "config": str(config_path),
             "datasets": selected_datasets,
             "selection_datasets": selection_datasets,
             "excluded_datasets": sorted(list(exclude_set)),
+            "selection_primary_metric": selection_primary_metric,
+            "selection_primary_metric_source": selection_primary_metric_source,
             "stages": stages,
             "seed": seed_value,
             "seed_meta": seed_meta,
@@ -1730,11 +2494,27 @@ def main() -> None:
             "summary_json": str(final_summary_path),
             "phase3_b_vs_e_csv": str(b_vs_e_csv),
             "phase3_b_vs_e_meta": b_vs_e_meta,
+            "phase4_b_vs_f_csv": str(b_vs_f_csv) if b_vs_f_csv is not None else None,
+            "phase4_b_vs_f_meta": b_vs_f_meta,
+            "phase4_mask_priors_csv": str(priors_csv) if priors_csv is not None else None,
+            "phase4_bbest_backend": bbest_mask_backend if has_f_stages else None,
+            "phase4_bbest_backend_variant": bbest_mask_variant if has_f_stages else None,
+            "phase4_bbest_backend_source": bbest_backend_source if has_f_stages else None,
+            "phase4_bbest_backend_original": bbest_mask_backend_original if has_f_stages else None,
+            "phase4_bbest_backend_variant_original": bbest_mask_variant_original if has_f_stages else None,
+            "phase4_bbest_backend_environment": f_bbest_backend_env if has_f_stages else None,
+            "phase4_mask_propagation": normalize_mask_propagation_cfg(part2_cfg) if has_f_stages else None,
+            "phase4_bbest_postprocess_meta": f1_bbest_post_meta if has_f_stages else None,
             "failure_csv": str(failure_csv),
             "failure_explained_csv": str(failure_explained_csv),
             "acceptance_report": str(report_path),
             "log_path": str(log_path),
             "final_best": asdict(final_best.spec),
+            "f_best": asdict(f_final.spec) if f_final is not None else None,
+            "phase4_final_policy": "force_vggt4d_prior" if has_f_stages else None,
+            "f_stage_best_candidates": [asdict(x.spec) for x in f_stage_bests],
+            "has_f_stages": has_f_stages,
+            "f1_prior_sources": sorted(list(f1_prior_sources.keys())),
         },
     )
 
@@ -1745,11 +2525,15 @@ def main() -> None:
     )
     logger.info("Video-only cleanup stats: %s", cleanup_stats)
 
-    logger.info("Phase3 summary: %s", final_summary_path)
-    logger.info("Phase3 ablation csv: %s", ablation_csv)
-    logger.info("Phase3 selection json: %s", selection_json)
+    logger.info("%s summary: %s", phase_label.upper(), final_summary_path)
+    logger.info("%s ablation csv: %s", phase_label.upper(), ablation_csv)
+    logger.info("%s selection json: %s", phase_label.upper(), selection_json)
     logger.info("Phase3 B-vs-E csv: %s", b_vs_e_csv)
-    logger.info("Phase3 acceptance report: %s", report_path)
+    if b_vs_f_csv is not None:
+        logger.info("Phase4 B-vs-F csv: %s", b_vs_f_csv)
+    if priors_csv is not None:
+        logger.info("Phase4 mask priors csv: %s", priors_csv)
+    logger.info("%s acceptance report: %s", phase_label.upper(), report_path)
 
 
 if __name__ == "__main__":

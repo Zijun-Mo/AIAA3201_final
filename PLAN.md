@@ -74,7 +74,7 @@
 
 ## Phase 2：路线 B（主线方法，2.5-3.5 天）
 
-`SAM2 / Track Anything -> ProPainter`
+`SAM2 / Track Anything + bidirectional no-wrap propagation -> ProPainter`
 
 ### 子实验
 | 编号 | 内容 | 变量 | 预计耗时 | 目标 |
@@ -88,6 +88,7 @@
 ### 输出
 - `B-best`（主方法）。
 - `A-best vs B-best` 定量+定性对比。
+- B-best 后处理协议需记录：全局单一 mask backend、prompt anchors、`bidirectional_no_wrap` 传播策略、是否触发 fallback。
 
 ### 验收门槛
 - B-best 在多数场景优于 A-best（至少在视觉质量和关键指标上）。
@@ -120,25 +121,41 @@
 
 ---
 
-## Phase 4：路线 F（研究探索：运动/几何增强，2-3 天）
+## Phase 4：路线 F（研究探索：VGGT4D prior 对照，2-3 天）
 
-`motion/geometric cue + semantic mask`
+**状态（2026-04-30）：已完成开发与全量验收。**
+- 全量实验：`phase4_bidir_full_20260430_162056`
+- Gate：`scripts/check_phase4.sh` 通过
+- 最终导出：`F1 / bbest_vggt4d_replace_yolo`（`phase4_final_policy=force_vggt4d_prior`）
+- 关联 Phase2：`phase2_bidir_full_20260430_150340`（全局 B-best backend=`sam2`）
+
+`VGGT4D raw mask -> B-best mask backend + bidirectional no-wrap propagation = VGGT4D prior -> ProPainter`
+
+### 口径约束
+- YOLO-only、VGGT4D raw、VGGT4D+YOLO 与相关先验融合都只是探索/消融实验，只需要诚实产生对比结果，不作为路线 F 的最终产物。
+- 路线 F 最终导出的视频、指标与报告主结果必须来自 `VGGT4D prior`。
+- `VGGT4D prior` 不是直接使用 VGGT4D 原始 mask；它指 VGGT4D 输出先转为 prompt anchors，再经过 B-best 实际使用的全局 mask backend 与 `bidirectional_no_wrap` 传播策略后的结果。
+- 首尾不连续视频按普通非循环视频处理；SAM2/Track Anything 禁止把尾帧记忆直接接到首帧。
 
 ### 子实验
 | 编号 | 内容 | 变量 | 预计耗时 | 目标 |
 | --- | --- | --- | ---: | --- |
-| F1 | motion prior 生成 | 稀疏/稠密光流 | 0.5 天 | 获得动态先验 |
-| F2 | 与 SAM 融合 | 交集/并集/加权 | 0.5 天 | 提升动态判别可信度 |
-| F3 | 轨迹一致性过滤 | threshold/track length | 0.5 天 | 减少静态误删 |
-| F4 | 可选高级线索 | VGGT4D cue | 0.5-1 天 | 增强复杂场景稳定性 |
-| F5 | 难例对比 | 遮挡/多目标场景 | 0.25 天 | 给出 F 的优势证据 |
+| F1 | VGGT4D prior 主结果 | chunk_size / frame chunk strategy / B-best mask backend | 0.5 天 | 生成路线 F 最终视频与指标 |
+| F2 | B-best 基线复现实验 | B-best 固定配置 | 0.25 天 | 作为 F 路线对照基线 |
+| F3 | mask prior 对照 | YOLO-only / VGGT4D raw / VGGT4D prior / VGGT4D+YOLO | 0.5 天 | 诚实比较先验质量与失败模式 |
+| F4 | 先验融合探索 | vggt4d_guided / weighted / intersection / union / motion filtering | 0.5-1 天 | 仅作为消融，分析是否带来增益或副作用 |
+| F5 | 难例对比 | 遮挡/多目标/静态人车 | 0.25 天 | 解释 VGGT4D prior 的适用边界 |
 
 ### 输出
-- `B vs B+F` 对比结果。
+- `F-final = B+F(VGGT4D prior)` 的视频、指标与报告主结果。
+- `YOLO-only vs VGGT4D raw vs VGGT4D prior vs VGGT4D+YOLO/fusion` 对比结果（mask 级/消融级）。
+- `B-best vs F-final(VGGT4D prior)` 对比结果（视频级）。
 - 难场景 case study（重点讲“该不该删”的判断改进）。
 
 ### 验收门槛
-- 至少在静态误删或复杂运动场景上优于 B。
+- 3 个 mandatory 数据集均有 `VGGT4D prior` 版本视频与指标。
+- YOLO、VGGT4D raw、融合结果只进入消融表和失败分析；若没有优于 B-best，也按真实结果报告，不替换 F-final。
+- 若 `VGGT4D prior` 生成失败，路线 F 标记为失败并记录原因，禁止改用 YOLO 或融合结果冒充路线 F 最终产物。
 
 ---
 
@@ -204,7 +221,7 @@
 | A-best | YOLO+Flow | OpenCV |  |  |  |  |
 | B-best | SAM2/TA | ProPainter |  |  |  |  |
 | B+E | refined mask | ProPainter |  |  |  |  |
-| B+F | mask+motion cue | ProPainter |  |  |  |  |
+| B+F | VGGT4D prior | ProPainter |  |  |  |  |
 | G | refined mask | Diffusion |  |  |  |  |
 
 ## 表 2：A 路线消融（建议）
@@ -222,7 +239,7 @@
 ## 图（至少 4 组）
 - A-best vs B-best 全局对比图。
 - B vs B+E 边界细节图。
-- B vs B+F 难场景图（遮挡/多目标）。
+- B vs B+F(VGGT4D prior) 难场景图（遮挡/多目标）。
 - B vs G “背景未出现”专题图。
 
 ---

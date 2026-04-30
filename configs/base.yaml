@@ -152,6 +152,12 @@ part2:
       - giraffe
       - antelope
     max_prompts: 3
+  mask_propagation:
+    mode: bidirectional_no_wrap
+    max_anchors: 3
+    max_prompts_per_anchor: 3
+    min_anchor_gap_ratio: 0.16
+    min_prompt_area_ratio: 0.000001
   mask_post:
     refined_kernel: 5
     temporal_smooth_window: 1
@@ -166,20 +172,21 @@ part2:
     low_mean_fallback: phase1
   selection:
     exclude_datasets: []
+    primary_metric: mask
   propainter:
     repo_url: https://github.com/sczhou/ProPainter.git
     balanced_profile:
-      neighbor_length: 10
-      ref_stride: 10
-      subvideo_length: 40
-      resize_ratio: 0.75
+      neighbor_length: 6
+      ref_stride: 16
+      subvideo_length: 20
+      resize_ratio: 0.5
       mask_dilation: 4
       fp16: true
     degraded_profile:
-      neighbor_length: 8
-      ref_stride: 14
-      subvideo_length: 28
-      resize_ratio: 0.66
+      neighbor_length: 4
+      ref_stride: 20
+      subvideo_length: 12
+      resize_ratio: 0.5
       mask_dilation: 4
       fp16: true
     profile_grid:
@@ -263,6 +270,69 @@ part3:
         bmx-trees: person riding a bicycle
         tennis: tennis player
       device: cuda
+  f_route:
+    vggt4d:
+      env_name: vggt4d
+      repo_dir: data/external/vggt4d
+      script_relpath: run_vggt4d_chunked.py
+      chunk_size: 40
+      strict_backend: true
+    flow:
+      method: dense
+      compensate_global: true
+      farneback:
+        pyr_scale: 0.5
+        levels: 3
+        winsize: 15
+        iterations: 3
+        poly_n: 5
+        poly_sigma: 1.2
+      aggregation: median
+    fusion:
+      grid:
+        - name: intersection
+          method: intersection
+          pixel_motion_threshold: 1.5
+        - name: union
+          method: union
+          pixel_motion_threshold: 1.5
+        - name: weighted_a04
+          method: weighted
+          weighted_alpha: 0.4
+          weighted_threshold: 0.5
+        - name: weighted_a06
+          method: weighted
+          weighted_alpha: 0.6
+          weighted_threshold: 0.5
+    trajectory:
+      grid:
+        - name: strict
+          min_track_length: 3
+          motion_smooth_window: 3
+          track_motion_threshold: 1.0
+          min_kept_active_ratio: 0.95
+        - name: balanced
+          min_track_length: 2
+          motion_smooth_window: 3
+          track_motion_threshold: 0.5
+          min_kept_active_ratio: 0.95
+        - name: loose
+          min_track_length: 1
+          motion_smooth_window: 3
+          track_motion_threshold: 0.0
+          min_kept_active_ratio: 0.95
+    f4:
+      enable_bidirectional: true
+      max_consistency_error: 3.0
+      grid:
+        - name: bidir_e1.5
+          max_consistency_error: 1.5
+        - name: bidir_e3.0
+          max_consistency_error: 3.0
+        - name: bidir_e5.0
+          max_consistency_error: 5.0
+        - name: bidir_e8.0
+          max_consistency_error: 8.0
   runtime:
     device: auto
     auto_install_missing: true
