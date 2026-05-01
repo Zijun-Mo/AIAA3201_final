@@ -188,16 +188,33 @@ def run_variant(
         logger.info("[%s] dataset=%s", vname, ds)
         ds_cfg = ds_cfgs[ds]
 
-        frame_dir = REPO_ROOT / ds_cfg.get("processed_frames_dir", "")
-        frame_paths = list_images(frame_dir)
-        if not frame_paths:
-            raise RuntimeError(f"No frames for {ds} in {frame_dir}")
-        if max_frames:
-            frame_paths = frame_paths[:max_frames]
-        frame_names = [p.name for p in frame_paths]
-        frames = [cv2.imread(str(p), cv2.IMREAD_COLOR) for p in frame_paths]
+        # Use ProPainter-inpainted frames from Phase 3 as diffusion input base
+        phase3_ds_root = REPO_ROOT / "outputs" / "videos" / phase3_exp_id / ds
+        phase3_frame_dir = phase3_ds_root / "frames"
+        if phase3_frame_dir.exists() and list_images(phase3_frame_dir):
+            frame_paths = list_images(phase3_frame_dir)
+            if max_frames:
+                frame_paths = frame_paths[:max_frames]
+            frame_names = [p.name for p in frame_paths]
+            frames = [cv2.imread(str(p), cv2.IMREAD_COLOR) for p in frame_paths]
+        else:
+            # Fallback: decode from restored video
+            restored_video = phase3_ds_root / "restored_h264.mp4"
+            if not restored_video.exists():
+                raise RuntimeError(f"Phase 3 restored video not found: {restored_video}")
+            frames = decode_video_frames(restored_video, as_gray=False)
+            if not frames:
+                raise RuntimeError(f"No frames decoded from {restored_video}")
+            if max_frames:
+                frames = frames[:max_frames]
+            # Generate synthetic frame names matching original count
+            raw_frame_dir = REPO_ROOT / ds_cfg.get("processed_frames_dir", "")
+            raw_paths = list_images(raw_frame_dir)
+            frame_names = [p.name for p in raw_paths[:len(frames)]]
+            if len(frame_names) < len(frames):
+                frame_names += [f"{i:05d}.png" for i in range(len(frame_names), len(frames))]
 
-        mask_video = REPO_ROOT / "outputs" / "videos" / phase3_exp_id / ds / "mask_h264.mp4"
+        mask_video = phase3_ds_root / "mask_h264.mp4"
         raw_masks = decode_video_frames(mask_video, as_gray=True)
         if not raw_masks:
             raise RuntimeError(f"No masks from {mask_video}")

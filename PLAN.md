@@ -239,13 +239,13 @@
 
 ### 验收结果
 - **状态**：PASS（2026-05-01）
-- Exp ID：`phase5_20260501_143822`（`check_phase5`: PASS）
+- Exp ID：`phase5_20260501_153130`（`check_phase5`: PASS）
 - G-best variant：`G-high`（mask_dilation=20, denoise_strength=0.75, keyframe_interval=1）
 - Model：`stable-diffusion-v1-5/stable-diffusion-inpainting`，device=cuda（RTX 4080 SUPER）
-- Aggregate（G-high）：`JM=0.6784`，`JR=0.7813`，`Q_REMOVE=0.9170`
-- B→G delta：`delta_JM=+0.0002`，`delta_JR=0.0`，`delta_Q_REMOVE=-0.0236`
-- 消融结果：G-low Q_REMOVE=0.8838，G-mid=0.8923，G-high=0.9170，G-hybrid=0.8932
-- Q_REMOVE 相对 B-best 轻微下降（-0.024），符合 PLAN.md 预期的时序代价 trade-off；G-high 在大 mask dilation 下纹理生成质量最优。
+- Aggregate（G-high）：`JM=0.6782`，`JR=0.7813`，`Q_REMOVE=0.9464`
+- B→G delta：`delta_JM=+0.0135`，`delta_JR=+0.0125`，`delta_Q_REMOVE=+0.0012`
+- 消融结果：G-low Q_REMOVE=0.9458，G-mid=0.9336，G-high=0.9464，G-hybrid=0.9311
+- 修复 bug（diffusion 输入改为 ProPainter 补全帧而非原始帧）后，Q_REMOVE 相对 B-best 轻微提升（+0.001）；G-high 在大 mask dilation 下纹理生成质量最优。
 - 3 个 mandatory 数据集均有完整视频输出与指标。
 
 ---
