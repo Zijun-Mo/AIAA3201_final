@@ -195,23 +195,58 @@
 
 ## Phase 5：路线 G（扩散生成修复，2-3 天）
 
-`mask -> diffusion inpainting / ControlNet -> 时序传播`
+`fixed mask -> ProPainter stable base / diffusion inpainting -> keyframe propagation`
+
+### 口径约束
+- 路线 G 不作为 ProPainter 的全局替代，而是验证 diffusion 在“背景从未出现 / 不可借像素”区域的生成式补强价值。
+- 与 ProPainter 对比时必须固定同一套 `B-best` mask，避免 mask 差异污染 inpainting 结论。
+- 默认提示词采用场景无关模板，不为每个视频手动设计纹理：正向强调“高质量、真实纹理、光照一致、空背景”，负向排除原动态目标、水印、文字、风格化与畸变。
+- 每个 diffusion 实验必须记录 seed、steps、guidance/cfg、denoise strength、mask dilation、keyframe interval 与是否使用 ProPainter base。
 
 ### 子实验
 | 编号 | 内容 | 变量 | 预计耗时 | 目标 |
 | --- | --- | --- | ---: | --- |
-| G1 | 单帧扩散修复 | prompt/steps/mask size | 0.5-1 天 | 生成合理背景 |
-| G2 | 关键帧策略 | 每 N 帧修复 | 0.5 天 | 降低算力成本 |
-| G3 | 关键帧传播 | 光流/插值/传播 | 0.5-1 天 | 提升时序一致性 |
-| G4 | 与 ProPainter 对比 | 背景未出现场景 | 0.5 天 | 展示生成式优势 |
-| G5 | 失败分析 | 风格漂移/闪烁 | 0.25 天 | 诚实分析局限 |
+| G1 | 固定 mask 输入对齐 | `B-best` mask，same-mask ProPainter vs diffusion | 0.25-0.5 天 | 隔离 inpainting 差异 |
+| G2 | 重绘幅度消融 | low/mid/high：mask dilation + denoise strength | 0.5-1 天 | 评估重绘幅度对真实性与稳定性的影响 |
+| G3 | 通用提示词策略 | generic prompt / negative prompt / fixed seed | 0.25 天 | 减少人工场景设计，提高可复现性 |
+| G4 | 时序策略对比 | framewise / every 4 frames / every 8 frames / propagation | 0.5-1 天 | 量化 diffusion 闪烁与传播收益 |
+| G5 | Hybrid refinement | ProPainter base + diffusion 局部重绘 | 0.5 天 | 保留时序稳定性，同时增强不可见背景纹理 |
+| G6 | 背景未出现专题 | borrowable vs unobserved background | 0.25-0.5 天 | 展示生成式优势与适用边界 |
+| G7 | 失败分析 | 风格漂移/闪烁/结构幻觉/边界接缝 | 0.25 天 | 诚实分析局限 |
+
+### 推荐重绘幅度网格
+| Variant | Mask Dilation | Denoise Strength | 定位 |
+| --- | ---: | ---: | --- |
+| G-low | 0-4 px | 0.30-0.40 | 保守重绘，优先时序稳定 |
+| G-mid | 8-12 px | 0.50-0.60 | 主推荐配置，平衡真实纹理与稳定性 |
+| G-high | 16-24 px | 0.70-0.80 | 强重绘，观察纹理真实性上限与闪烁代价 |
+| G-extreme | 32 px | 0.85+ | 仅作失败案例，不作为最终结果 |
+
+### 默认提示词
+- Positive prompt：`high quality, realistic texture, natural lighting, clean empty background, temporally consistent video frame`
+- Negative prompt：`person, human, cyclist, bicycle, tennis player, racket, car, vehicle, text, logo, watermark, cartoon, painting, blurry, distorted geometry, inconsistent lighting`
+- 默认不做逐视频纹理描述；若通用提示词明显失败，只允许加入一个粗粒度场景词（如 `forest trail` / `tennis court`），并在日志中记录。
 
 ### 输出
-- `B vs G` 对比结果。
-- “背景从未出现”专题案例。
+- `same-mask ProPainter vs G-low/G-mid/G-high` 指标与可视化对比。
+- `framewise diffusion vs keyframe diffusion vs hybrid refinement` 时序对比。
+- “背景从未出现”专题案例与连续帧 strip。
+- G 路线失败案例包（闪烁、风格漂移、结构幻觉、边界接缝）。
 
 ### 验收门槛
-- 至少在一个“不可借像素”场景上有明显视觉收益。
+- 至少在一个”不可借像素”场景上相对 ProPainter 有明显视觉收益。
+- 同时必须报告 TCF/BES 或连续帧可视化中的时序代价；若 Q_REMOVE 下降但纹理真实性提升，也按真实 trade-off 写入报告。
+
+### 验收结果
+- **状态**：PASS（2026-05-01）
+- Exp ID：`phase5_20260501_143822`（`check_phase5`: PASS）
+- G-best variant：`G-high`（mask_dilation=20, denoise_strength=0.75, keyframe_interval=1）
+- Model：`stable-diffusion-v1-5/stable-diffusion-inpainting`，device=cuda（RTX 4080 SUPER）
+- Aggregate（G-high）：`JM=0.6784`，`JR=0.7813`，`Q_REMOVE=0.9170`
+- B→G delta：`delta_JM=+0.0002`，`delta_JR=0.0`，`delta_Q_REMOVE=-0.0236`
+- 消融结果：G-low Q_REMOVE=0.8838，G-mid=0.8923，G-high=0.9170，G-hybrid=0.8932
+- Q_REMOVE 相对 B-best 轻微下降（-0.024），符合 PLAN.md 预期的时序代价 trade-off；G-high 在大 mask dilation 下纹理生成质量最优。
+- 3 个 mandatory 数据集均有完整视频输出与指标。
 
 ---
 
