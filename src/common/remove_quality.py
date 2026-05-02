@@ -300,12 +300,13 @@ def compute_remove_quality(
     frames_bgr: list[np.ndarray],
     masks_u8: list[np.ndarray],
     detector: DynamicObjectDetector,
-    _quality_weights: dict[str, float],
+    quality_weights: dict[str, float],
     tcf_dilate_kernel: int,
     bes_dilate_kernel: int,
     bes_erode_kernel: int,
     bes_sobel_ksize: int,
 ) -> tuple[dict[str, Any], list[dict[str, float]], dict[str, Any]]:
+    _ = quality_weights
     if not frames_bgr:
         return (
             {"ROS": 0.0, "TCF": 0.0, "BES": 0.0, "video_frame_count": 0},
