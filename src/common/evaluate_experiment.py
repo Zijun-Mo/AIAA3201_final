@@ -310,7 +310,7 @@ def load_prediction_dataset(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Unified evaluation entry for JM/JR + ROS/TCF/BES/Q_REMOVE (schema v2_remove_quality). "
+            "Unified evaluation entry for JM/JR + ROS/TCF/BES (schema v2_remove_quality). "
             "Inputs support either <dataset>/frames+masks or restored_h264.mp4+mask_h264.mp4."
         )
     )
@@ -402,7 +402,6 @@ def main() -> None:
     ros_vals: list[float] = []
     tcf_vals: list[float] = []
     bes_vals: list[float] = []
-    q_vals: list[float] = []
 
     exclude_set = set(exclude_for_aggregate)
     for dataset in selected_names:
@@ -459,7 +458,7 @@ def main() -> None:
 
         frame_metrics_path = metrics_dir / f"{dataset}_frame_metrics.csv"
         with frame_metrics_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["frame_idx", "ROS", "TCF", "BES", "Q_REMOVE"])
+            writer = csv.DictWriter(f, fieldnames=["frame_idx", "ROS", "TCF", "BES"])
             writer.writeheader()
             for idx, item in enumerate(frame_metrics):
                 writer.writerow({"frame_idx": idx, **item})
@@ -501,7 +500,6 @@ def main() -> None:
             ros_vals.append(float(ds_metrics.get("ROS", 0.0)))
             tcf_vals.append(float(ds_metrics.get("TCF", 0.0)))
             bes_vals.append(float(ds_metrics.get("BES", 0.0)))
-            q_vals.append(float(ds_metrics.get("Q_REMOVE", 0.0)))
 
         rows.append(
             {
@@ -512,7 +510,6 @@ def main() -> None:
                 "ROS": ds_metrics.get("ROS", ""),
                 "TCF": ds_metrics.get("TCF", ""),
                 "BES": ds_metrics.get("BES", ""),
-                "Q_REMOVE": ds_metrics.get("Q_REMOVE", ""),
                 "mask_frame_count": ds_metrics.get("mask_frame_count", ""),
                 "video_frame_count": ds_metrics.get("video_frame_count", ""),
                 "ros_fallback_frame_count": (ds_result.get("quality_detail", {}) or {}).get("ros_fallback_frame_count", ""),
@@ -529,7 +526,6 @@ def main() -> None:
         "ROS": float(np.mean(np.array(ros_vals))) if ros_vals else None,
         "TCF": float(np.mean(np.array(tcf_vals))) if tcf_vals else None,
         "BES": float(np.mean(np.array(bes_vals))) if bes_vals else None,
-        "Q_REMOVE": float(np.mean(np.array(q_vals))) if q_vals else None,
     }
 
     summary_path = metrics_dir / "summary.json"
@@ -548,7 +544,6 @@ def main() -> None:
                 "ROS",
                 "TCF",
                 "BES",
-                "Q_REMOVE",
                 "mask_frame_count",
                 "video_frame_count",
                 "ros_fallback_frame_count",

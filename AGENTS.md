@@ -20,7 +20,7 @@
 
 ### 1.3 指标（硬约束）
 - Mask 质量：JM（IoU mean）、JR（IoU recall）。
-- 视频移除质量：ROS、TCF、BES、Q_REMOVE。
+- 视频移除质量：ROS、TCF、BES。
 - 定性结果：多方法可视化对比图与失败案例。
 
 ## 2. 技术路线优先级
@@ -93,7 +93,7 @@
 
 ### 5.2 评估统一
 - JM/JR 计算逻辑在所有路线中保持一致。
-- 质量评估统一使用 ROS/TCF/BES，并由 Q_REMOVE 汇总。
+- 质量评估统一使用 ROS/TCF/BES。
 - 表格中的数值必须可追溯到 `outputs/metrics/` 原始文件。
 
 ### 5.3 可视化统一

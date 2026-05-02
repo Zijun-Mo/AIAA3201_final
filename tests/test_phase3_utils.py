@@ -84,9 +84,9 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/a/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": 0.95, "JR": 0.95, "Q_REMOVE": 0.90}},
-                "bmx-trees": {"metrics": {"JM": 0.70, "JR": 0.75, "Q_REMOVE": 0.65}},
-                "tennis": {"metrics": {"JM": 0.68, "JR": 0.74, "Q_REMOVE": 0.64}},
+                "wild": {"metrics": {"JM": 0.95, "JR": 0.95, "TCF": 0.90}},
+                "bmx-trees": {"metrics": {"JM": 0.70, "JR": 0.75, "TCF": 0.65}},
+                "tennis": {"metrics": {"JM": 0.68, "JR": 0.74, "TCF": 0.64}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.1},
@@ -103,9 +103,9 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/b/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": 0.10, "JR": 0.12, "Q_REMOVE": 0.20}},
-                "bmx-trees": {"metrics": {"JM": 0.80, "JR": 0.83, "Q_REMOVE": 0.82}},
-                "tennis": {"metrics": {"JM": 0.79, "JR": 0.82, "Q_REMOVE": 0.81}},
+                "wild": {"metrics": {"JM": 0.10, "JR": 0.12, "TCF": 0.20}},
+                "bmx-trees": {"metrics": {"JM": 0.80, "JR": 0.83, "TCF": 0.82}},
+                "tennis": {"metrics": {"JM": 0.79, "JR": 0.82, "TCF": 0.81}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.1},
@@ -149,9 +149,9 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/high_q/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": None, "JR": None, "Q_REMOVE": 0.99}},
-                "bmx-trees": {"metrics": {"JM": 0.62, "JR": 0.8, "Q_REMOVE": 0.91}},
-                "tennis": {"metrics": {"JM": 0.80, "JR": 1.0, "Q_REMOVE": 0.97}},
+                "wild": {"metrics": {"JM": None, "JR": None, "TCF": 0.99}},
+                "bmx-trees": {"metrics": {"JM": 0.62, "JR": 0.8, "TCF": 0.91}},
+                "tennis": {"metrics": {"JM": 0.80, "JR": 1.0, "TCF": 0.97}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.0001, "active_frame_ratio": 0.01},
@@ -168,9 +168,9 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/covered/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": None, "JR": None, "Q_REMOVE": 0.95}},
-                "bmx-trees": {"metrics": {"JM": 0.61, "JR": 0.79, "Q_REMOVE": 0.90}},
-                "tennis": {"metrics": {"JM": 0.79, "JR": 0.99, "Q_REMOVE": 0.96}},
+                "wild": {"metrics": {"JM": None, "JR": None, "TCF": 0.95}},
+                "bmx-trees": {"metrics": {"JM": 0.61, "JR": 0.79, "TCF": 0.90}},
+                "tennis": {"metrics": {"JM": 0.79, "JR": 0.99, "TCF": 0.96}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.01, "active_frame_ratio": 0.6},
@@ -215,8 +215,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/quality_first/summary.json"),
             aggregate={},
             per_dataset={
-                "bmx-trees": {"metrics": {"JM": 0.62, "JR": 0.70, "Q_REMOVE": 0.95}},
-                "tennis": {"metrics": {"JM": 0.61, "JR": 0.69, "Q_REMOVE": 0.94}},
+                "bmx-trees": {"metrics": {"JM": 0.62, "JR": 0.70, "TCF": 0.05}},
+                "tennis": {"metrics": {"JM": 0.61, "JR": 0.69, "TCF": 0.06}},
             },
             mask_stats={
                 "bmx-trees": {"mean_mask_ratio": 0.04, "active_frame_ratio": 1.0},
@@ -232,8 +232,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/mask_first/summary.json"),
             aggregate={},
             per_dataset={
-                "bmx-trees": {"metrics": {"JM": 0.72, "JR": 0.80, "Q_REMOVE": 0.88}},
-                "tennis": {"metrics": {"JM": 0.71, "JR": 0.79, "Q_REMOVE": 0.87}},
+                "bmx-trees": {"metrics": {"JM": 0.72, "JR": 0.80, "TCF": 0.12}},
+                "tennis": {"metrics": {"JM": 0.71, "JR": 0.79, "TCF": 0.13}},
             },
             mask_stats={
                 "bmx-trees": {"mean_mask_ratio": 0.04, "active_frame_ratio": 1.0},
@@ -285,8 +285,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/f1/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": 0.75, "JR": 0.82, "Q_REMOVE": 0.70}},
-                "bmx-trees": {"metrics": {"JM": 0.78, "JR": 0.84, "Q_REMOVE": 0.71}},
+                "wild": {"metrics": {"JM": 0.75, "JR": 0.82, "TCF": 0.70}},
+                "bmx-trees": {"metrics": {"JM": 0.78, "JR": 0.84, "TCF": 0.71}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.10},
@@ -302,8 +302,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/f3/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": 0.65, "JR": 0.70, "Q_REMOVE": 0.95}},
-                "bmx-trees": {"metrics": {"JM": 0.66, "JR": 0.71, "Q_REMOVE": 0.96}},
+                "wild": {"metrics": {"JM": 0.65, "JR": 0.70, "TCF": 0.95}},
+                "bmx-trees": {"metrics": {"JM": 0.66, "JR": 0.71, "TCF": 0.96}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.10},
@@ -347,8 +347,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/vggt/summary.json"),
             aggregate={},
             per_dataset={
-                "bmx-trees": {"metrics": {"JM": 0.50, "JR": 0.60, "Q_REMOVE": 0.70}},
-                "tennis": {"metrics": {"JM": 0.51, "JR": 0.61, "Q_REMOVE": 0.71}},
+                "bmx-trees": {"metrics": {"JM": 0.50, "JR": 0.60, "TCF": 0.70}},
+                "tennis": {"metrics": {"JM": 0.51, "JR": 0.61, "TCF": 0.71}},
             },
             mask_stats={
                 "bmx-trees": {"mean_mask_ratio": 0.03, "active_frame_ratio": 1.0},
@@ -364,8 +364,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/yolo/summary.json"),
             aggregate={},
             per_dataset={
-                "bmx-trees": {"metrics": {"JM": 0.90, "JR": 0.95, "Q_REMOVE": 0.96}},
-                "tennis": {"metrics": {"JM": 0.91, "JR": 0.96, "Q_REMOVE": 0.97}},
+                "bmx-trees": {"metrics": {"JM": 0.90, "JR": 0.95, "TCF": 0.96}},
+                "tennis": {"metrics": {"JM": 0.91, "JR": 0.96, "TCF": 0.97}},
             },
             mask_stats={
                 "bmx-trees": {"mean_mask_ratio": 0.10, "active_frame_ratio": 1.0},
@@ -410,8 +410,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/prior/summary.json"),
             aggregate={},
             per_dataset={
-                "bmx-trees": {"metrics": {"JM": 0.40, "JR": 0.50, "Q_REMOVE": 0.60}},
-                "tennis": {"metrics": {"JM": 0.41, "JR": 0.51, "Q_REMOVE": 0.61}},
+                "bmx-trees": {"metrics": {"JM": 0.40, "JR": 0.50, "TCF": 0.60}},
+                "tennis": {"metrics": {"JM": 0.41, "JR": 0.51, "TCF": 0.61}},
             },
             mask_stats={
                 "bmx-trees": {"mean_mask_ratio": 0.04, "active_frame_ratio": 1.0},
@@ -427,8 +427,8 @@ class TestPhase3Utils(unittest.TestCase):
             summary_path=Path("/tmp/fusion/summary.json"),
             aggregate={},
             per_dataset={
-                "bmx-trees": {"metrics": {"JM": 0.90, "JR": 0.95, "Q_REMOVE": 0.96}},
-                "tennis": {"metrics": {"JM": 0.91, "JR": 0.96, "Q_REMOVE": 0.97}},
+                "bmx-trees": {"metrics": {"JM": 0.90, "JR": 0.95, "TCF": 0.96}},
+                "tennis": {"metrics": {"JM": 0.91, "JR": 0.96, "TCF": 0.97}},
             },
             mask_stats={
                 "bmx-trees": {"mean_mask_ratio": 0.10, "active_frame_ratio": 1.0},

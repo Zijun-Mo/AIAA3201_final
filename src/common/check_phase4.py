@@ -83,7 +83,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             with summary_path.open("r", encoding="utf-8") as f:
                 summary = json.load(f)
             agg = summary.get("aggregate", {}) or {}
-            for key in ["JM", "JR", "ROS", "TCF", "BES", "Q_REMOVE"]:
+            for key in ["JM", "JR", "ROS", "TCF", "BES"]:
                 if key not in agg:
                     issues.append(f"summary missing aggregate metric: {key}")
         except Exception as e:

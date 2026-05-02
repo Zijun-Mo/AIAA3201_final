@@ -44,7 +44,6 @@
 - ROS:
 - TCF:
 - BES:
-- Q_REMOVE:
 
 ## Qualitative Findings
 - Boundary artifacts:

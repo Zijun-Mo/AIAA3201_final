@@ -134,7 +134,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             if not isinstance(summary.get("datasets", {}), dict):
                 issues.append(f"invalid summary datasets field: {summary_path}")
             agg = summary.get("aggregate", {}) or {}
-            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+            for key in ["ROS", "TCF", "BES"]:
                 if key not in agg:
                     issues.append(f"missing aggregate metric '{key}' in {summary_path}")
             for key in ["PSNR", "SSIM"]:
@@ -149,7 +149,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             with per_dataset_csv.open("r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 headers = set(reader.fieldnames or [])
-            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+            for key in ["ROS", "TCF", "BES"]:
                 if key not in headers:
                     issues.append(f"missing column '{key}' in {per_dataset_csv}")
             for key in ["PSNR", "SSIM"]:

@@ -30,10 +30,10 @@ This repository contains the implementation and experiments for removing dynamic
 └── notebooks/
 ```
 
-## Acceptance Runbook (Phase 0-3, Safe Defaults)
+## Acceptance Runbook (Phase 0-5, Safe Defaults)
 
 This runbook is the default reproducible path for fresh clones.  
-Goal: pass Phase 0-3 acceptance checks with lowest risk.
+Goal: pass Phase 0-5 acceptance checks with lowest risk.
 
 ### 0) Prepare Environment
 
@@ -75,6 +75,8 @@ export P0_EXP="phase0_$(date +%Y%m%d_%H%M%S)"
 export P1_EXP="phase1_$(date +%Y%m%d_%H%M%S)"
 export P2_EXP="phase2_$(date +%Y%m%d_%H%M%S)"
 export P3_EXP="phase3_$(date +%Y%m%d_%H%M%S)"
+export P4_EXP="phase4_$(date +%Y%m%d_%H%M%S)"
+export P5_EXP="phase5_$(date +%Y%m%d_%H%M%S)"
 ```
 
 ### 2) Preflight Directories and Mandatory Data
@@ -170,8 +172,6 @@ ls -lh data/external/vggt4d/ckpts/model_tracker_fixed_e20.pt
 ```
 
 ```bash
-export P4_EXP="phase4_$(date +%Y%m%d_%H%M%S)"
-
 conda run -n aiaa3201 python src/part3/run_explore.py \
   --config configs/base.yaml \
   --datasets mandatory \
@@ -184,10 +184,38 @@ conda run -n aiaa3201 python src/part3/run_explore.py \
 bash scripts/check_phase4.sh --exp-id "$P4_EXP" --config configs/base.yaml
 ```
 
+### 8) Phase 5 (Route G + Gate, Diffusion Inpainting)
+
+Phase 5 implementation is under `src/part3/` (migrated from legacy `src/part4/` path).
+By default, only the final selected result (`outputs/videos/<exp_id>/...`) is kept.  
+Intermediate variant videos (`<exp_id>__G-*`) are cleaned after scoring.
+
+Phase 5 is based on Phase 2 (`B-best`) only:
+- `--phase2-exp-id "$P2_EXP"` provides both the fixed mask/base input source and the `B-best` metric reference.
+
+```bash
+python3 src/part3/run_diffusion.py \
+  --config configs/base.yaml \
+  --datasets mandatory \
+  --exp-id "$P5_EXP" \
+  --phase2-exp-id "$P2_EXP" \
+  --seed 42 \
+  --device cuda
+
+bash scripts/check_phase5.sh --exp-id "$P5_EXP" --config configs/base.yaml
+```
+
+If you need to keep all variant videos for debugging/visual comparison, add:
+
+```bash
+--keep-variant-videos
+```
+
 ## CLI Contract for Acceptance
 
 - Phase 2 safe path requires `--phase1-exp-id`.
 - Phase 3 safe path requires `--phase2-exp-id`.
+- Phase 5 safe path requires `--phase2-exp-id`.
 - Safe-path gate commands use:
   - `check_phase2 --strict-dual-run false`
   - `check_phase3 --strict-sam3-permission false`
@@ -365,7 +393,7 @@ bash scripts/preprocess.sh --datasets mandatory --overwrite
 ## Core Metrics
 
 - Mask quality: JM (IoU mean), JR (IoU recall)
-- Removal quality: ROS, TCF, BES, Q_REMOVE
+- Removal quality: ROS, TCF, BES
 
 ## Notes
 

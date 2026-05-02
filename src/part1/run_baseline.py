@@ -829,12 +829,15 @@ def metric_or_neg_inf(agg: dict[str, Any], key: str) -> float:
 def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float]:
     jm = metric_or_neg_inf(agg, "JM")
     jr = metric_or_neg_inf(agg, "JR")
-    q_remove = metric_or_neg_inf(agg, "Q_REMOVE")
+    tcf_value = agg.get("TCF", None)
+    tcf = float(tcf_value) if tcf_value is not None else float("inf")
+    if not np.isfinite(tcf):
+        tcf = float("inf")
 
     # A1-A3 prioritize mask quality first; A4-A5 prioritize reconstruction quality.
     if stage in {"A1", "A2", "A3"}:
-        return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
-    return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
+        return (jm, jr, -tcf, -abs(mean_mask_ratio - 0.1))
+    return (-tcf, jm, jr, -abs(mean_mask_ratio - 0.1))
 
 
 def parse_selection_coverage_constraints(selection_cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -989,14 +992,15 @@ def build_failure_case_index(
             bes_sobel_ksize=bes_sobel_ksize,
         )
         scored = sorted(
-            [(float(m.get("Q_REMOVE", 1.0)), idx) for idx, m in enumerate(per_frame_metrics)],
+            [(float(m.get("TCF", 0.0)), idx) for idx, m in enumerate(per_frame_metrics)],
             key=lambda x: x[0],
+            reverse=True,
         )
 
-        for rank, (q_remove, idx) in enumerate(scored[:top_k], start=1):
+        for rank, (tcf_score, idx) in enumerate(scored[:top_k], start=1):
             frame = frames[idx]
             name = frame_names[idx]
-            out_img = out_dir / f"{ds}_{Path(name).stem}_rank{rank}_qremove{q_remove:.4f}.png"
+            out_img = out_dir / f"{ds}_{Path(name).stem}_rank{rank}_tcf{tcf_score:.4f}.png"
             cv2.imwrite(str(out_img), frame)
             ros = float(per_frame_metrics[idx].get("ROS", 0.0))
             tcf = float(per_frame_metrics[idx].get("TCF", 0.0))
@@ -1014,7 +1018,7 @@ def build_failure_case_index(
                     "dataset": ds,
                     "frame": name,
                     "rank": rank,
-                    "q_remove": q_remove,
+                    "tcf": tcf_score,
                     "compare_image": str(out_img),
                 }
             )
@@ -1023,9 +1027,8 @@ def build_failure_case_index(
                     "dataset": ds,
                     "frame": name,
                     "rank": rank,
-                    "q_remove": q_remove,
-                    "ros": ros,
                     "tcf": tcf,
+                    "ros": ros,
                     "bes": bes,
                     "explanation": explanation,
                     "compare_image": str(out_img),
@@ -1034,7 +1037,7 @@ def build_failure_case_index(
 
     csv_path = out_dir / "failure_cases.csv"
     with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["dataset", "frame", "rank", "q_remove", "compare_image"])
+        writer = csv.DictWriter(f, fieldnames=["dataset", "frame", "rank", "tcf", "compare_image"])
         writer.writeheader()
         writer.writerows(rows)
 
@@ -1046,9 +1049,8 @@ def build_failure_case_index(
                 "dataset",
                 "frame",
                 "rank",
-                "q_remove",
-                "ros",
                 "tcf",
+                "ros",
                 "bes",
                 "explanation",
                 "compare_image",
@@ -1209,7 +1211,6 @@ def write_ablation_outputs(
                 "ROS": r.aggregate.get("ROS"),
                 "TCF": r.aggregate.get("TCF"),
                 "BES": r.aggregate.get("BES"),
-                "Q_REMOVE": r.aggregate.get("Q_REMOVE"),
                 "mean_mask_ratio": mean_ratio,
                 "active_frame_ratio": active_ratio,
                 "pred_root": str(r.candidate_root),
@@ -1236,7 +1237,6 @@ def write_ablation_outputs(
                 "ROS",
                 "TCF",
                 "BES",
-                "Q_REMOVE",
                 "mean_mask_ratio",
                 "active_frame_ratio",
                 "pred_root",
@@ -1275,10 +1275,10 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
-    lines.append("| JM | JR | ROS | TCF | BES | Q_REMOVE |")
-    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| JM | JR | ROS | TCF | BES |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: |")
     lines.append(
-        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} | {aggregate.get('Q_REMOVE')} |"
+        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} |"
     )
     lines.append("")
     lines.append("## Stage Best")
@@ -1296,12 +1296,12 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Per-Dataset Metrics")
     lines.append("")
-    lines.append("| Dataset | JM | JR | ROS | TCF | BES | Q_REMOVE | Fallback Applied |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    lines.append("| Dataset | JM | JR | ROS | TCF | BES | Fallback Applied |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- |")
     for ds_name, ds_payload in datasets.items():
         metrics = ds_payload.get("metrics", {}) or {}
         lines.append(
-            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} | {metrics.get('Q_REMOVE')} | {bool(fallback_applied_final.get(ds_name, False))} |"
+            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} | {bool(fallback_applied_final.get(ds_name, False))} |"
         )
     lines.append("")
     lines.append("## Acceptance Checks")
@@ -1563,7 +1563,7 @@ def main() -> None:
             stage_results.append(result)
             all_results.append(result)
             logger.info(
-                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f Q_REMOVE=%.4f",
+                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f",
                 stage_name,
                 spec.name,
                 metric_or_neg_inf(result.aggregate, "JM"),
@@ -1571,7 +1571,6 @@ def main() -> None:
                 metric_or_neg_inf(result.aggregate, "ROS"),
                 metric_or_neg_inf(result.aggregate, "TCF"),
                 metric_or_neg_inf(result.aggregate, "BES"),
-                metric_or_neg_inf(result.aggregate, "Q_REMOVE"),
             )
 
         best = select_best(

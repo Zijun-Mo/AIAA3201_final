@@ -145,9 +145,9 @@ class TestPhase2Utils(unittest.TestCase):
             summary_path=Path("/tmp/high_q/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": None, "JR": None, "Q_REMOVE": 0.99}},
-                "bmx-trees": {"metrics": {"JM": 0.6, "JR": 0.7, "Q_REMOVE": 0.9}},
-                "tennis": {"metrics": {"JM": 0.6, "JR": 0.7, "Q_REMOVE": 0.9}},
+                "wild": {"metrics": {"JM": None, "JR": None, "TCF": 0.99}},
+                "bmx-trees": {"metrics": {"JM": 0.6, "JR": 0.7, "TCF": 0.9}},
+                "tennis": {"metrics": {"JM": 0.6, "JR": 0.7, "TCF": 0.9}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.0001, "active_frame_ratio": 0.01},
@@ -164,9 +164,9 @@ class TestPhase2Utils(unittest.TestCase):
             summary_path=Path("/tmp/covered/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": None, "JR": None, "Q_REMOVE": 0.95}},
-                "bmx-trees": {"metrics": {"JM": 0.58, "JR": 0.68, "Q_REMOVE": 0.88}},
-                "tennis": {"metrics": {"JM": 0.58, "JR": 0.68, "Q_REMOVE": 0.88}},
+                "wild": {"metrics": {"JM": None, "JR": None, "TCF": 0.95}},
+                "bmx-trees": {"metrics": {"JM": 0.58, "JR": 0.68, "TCF": 0.88}},
+                "tennis": {"metrics": {"JM": 0.58, "JR": 0.68, "TCF": 0.88}},
             },
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.01, "active_frame_ratio": 0.6},
@@ -186,7 +186,7 @@ class TestPhase2Utils(unittest.TestCase):
         )
         self.assertEqual(best.spec.name, "covered")
 
-    def test_mask_first_selection_prefers_jm_over_q_remove(self):
+    def test_mask_first_selection_prefers_jm_over_tcf(self):
         spec_mask = CandidateSpec(
             stage="B1",
             name="sam2_like",
@@ -218,8 +218,8 @@ class TestPhase2Utils(unittest.TestCase):
             summary_path=Path("/tmp/sam2_like/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": None, "JR": None, "Q_REMOVE": 0.1}},
-                "bmx-trees": {"metrics": {"JM": 0.7, "JR": 0.8, "Q_REMOVE": 0.7}},
+                "wild": {"metrics": {"JM": None, "JR": None, "TCF": 0.9}},
+                "bmx-trees": {"metrics": {"JM": 0.7, "JR": 0.8, "TCF": 0.9}},
             },
             mask_stats={"wild": {"mean_mask_ratio": 0.01, "active_frame_ratio": 0.6}},
             backend_meta={},
@@ -232,8 +232,8 @@ class TestPhase2Utils(unittest.TestCase):
             summary_path=Path("/tmp/ta_like/summary.json"),
             aggregate={},
             per_dataset={
-                "wild": {"metrics": {"JM": None, "JR": None, "Q_REMOVE": 0.99}},
-                "bmx-trees": {"metrics": {"JM": 0.6, "JR": 0.7, "Q_REMOVE": 0.99}},
+                "wild": {"metrics": {"JM": None, "JR": None, "TCF": 0.1}},
+                "bmx-trees": {"metrics": {"JM": 0.6, "JR": 0.7, "TCF": 0.1}},
             },
             mask_stats={"wild": {"mean_mask_ratio": 0.01, "active_frame_ratio": 0.6}},
             backend_meta={},

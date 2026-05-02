@@ -15,7 +15,7 @@
 ### 0.2 成功标准（Definition of Done）
 - 代码可复现跑通（含 README 指令）。
 - mandatory 数据集（Wild / bmx-trees / tennis）都有输出视频。
-- 指标完整：JM、JR、ROS、TCF、BES、Q_REMOVE。
+- 指标完整：JM、JR、ROS、TCF、BES。
 - 有可用于论文的表格和图（含 failure cases）。
 - 有一条明确的结论链：`A-best -> B-best -> (B+E / B+F / G)`。
 
@@ -31,7 +31,7 @@
 ### 任务
 - 数据集整理：Wild、bmx-trees、tennis、可选 DAVIS。
 - 统一预处理：分辨率、fps、帧命名、mask 格式。  
-- 统一评价协议：JM/JR + ROS/TCF/BES/Q_REMOVE、可视化样式。
+- 统一评价协议：JM/JR + ROS/TCF/BES、可视化样式。
 - 建立实验记录模板。
 
 ### 输出
@@ -109,7 +109,7 @@
 - **状态**：PASS（2026-04-30）
 - Exp ID：`phase2_20260430_175248`（`check_phase2 --strict-dual-run false`: PASS）
 - B-best backend：`sam2`，传播策略：`bidirectional_no_wrap`
-- Aggregate：`JM=0.6647`，`JR=0.7688`，`Q_REMOVE=0.9452`
+- Aggregate：`JM=0.6647`，`JR=0.7688`，`TCF=0.0600`
 - 3 个 mandatory 数据集完整视频输出齐全，B-best 在视觉质量和关键指标上优于 A-best。
 
 ### 风险与回退
@@ -128,7 +128,7 @@
 | E1 | mask 后处理 | opening/closing/dilation/smoothing | 0.25-0.5 天 | 降低边界毛刺 |
 | E2 | temporal smoothing | 融合窗口大小 | 0.5 天 | 减少 flicker |
 | E3 | 更强 refiner | SAM3/其他 | 0.5-1 天 | 提升边界精度 |
-| E4 | 增益验证 | JM/JR/Q_REMOVE | 0.25 天 | 给出量化提升 |
+| E4 | 增益验证 | JM/JR/TCF | 0.25 天 | 给出量化提升 |
 
 ### 输出
 - `B vs B+E` 对比图与增益表。
@@ -141,8 +141,8 @@
 - **状态**：PASS（2026-05-01）
 - Exp ID：`phase3_sam3_multianchor_20260501_012933`（`check_phase3 --strict-sam3-permission true`: PASS）
 - E3 SAM3 multi-anchor refiner 与 SAM2 提示词策略完全统一（multi-anchor、gap-spaced、bidirectional_no_wrap）。
-- Aggregate（B+E+SAM3）：`JM=0.6782`，`JR=0.7812`，`Q_REMOVE=0.9406`
-- B→E+SAM3 delta：`delta_JM=+0.0135`，`delta_JR=+0.0124`，`delta_Q_REMOVE=-0.0046`
+- Aggregate（B+E+SAM3）：`JM=0.6782`，`JR=0.7812`，`TCF=0.0609`
+- B→E+SAM3 delta：`delta_JM=+0.0135`，`delta_JR=+0.0124`，`delta_TCF=+0.0009`
 - bmx-trees 和 tennis 上 JM/JR 均有可解释提升；wild 无 GT mask 故 JM/JR 为 None。
 
 ---
@@ -187,15 +187,17 @@
 - **状态**：PASS（2026-04-30）
 - Exp ID：`phase4_20260430_183904`（`check_phase4`: PASS）
 - F-best：`F1 / VGGT4D prior`，关联 Phase2：`phase2_20260430_175248`（B-best backend=`sam2`）
-- Aggregate（VGGT4D prior）：`JM=0.7074`，`JR=0.7688`，`Q_REMOVE=0.9418`
-- B→F delta：`delta_JM=+0.0427`，`delta_JR=0.0`，`delta_Q_REMOVE=-0.0034`
-- 3 个 mandatory 数据集均有 VGGT4D prior 版本视频与指标；JM 显著提升，Q_REMOVE 轻微下降属正常范围。
+- Aggregate（VGGT4D prior）：`JM=0.7074`，`JR=0.7688`，`TCF=0.0639`
+- B→F delta：`delta_JM=+0.0427`，`delta_JR=0.0`，`delta_TCF=+0.0039`
+- 3 个 mandatory 数据集均有 VGGT4D prior 版本视频与指标；JM 显著提升，TCF 轻微上升属正常范围。
 
 ---
 
 ## Phase 5：路线 G（扩散生成修复，2-3 天）
 
 `fixed mask -> ProPainter stable base / diffusion inpainting -> keyframe propagation`
+
+实现入口：`src/part3/run_diffusion.py`（已从 legacy `src/part4/run_diffusion.py` 迁移）。
 
 ### 口径约束
 - 路线 G 不作为 ProPainter 的全局替代，而是验证 diffusion 在“背景从未出现 / 不可借像素”区域的生成式补强价值。
@@ -235,17 +237,17 @@
 
 ### 验收门槛
 - 至少在一个”不可借像素”场景上相对 ProPainter 有明显视觉收益。
-- 同时必须报告 TCF/BES 或连续帧可视化中的时序代价；若 Q_REMOVE 下降但纹理真实性提升，也按真实 trade-off 写入报告。
+- 同时必须报告 TCF/BES 或连续帧可视化中的时序代价；若 TCF 上升但纹理真实性提升，也按真实 trade-off 写入报告。
 
 ### 验收结果
 - **状态**：PASS（2026-05-01）
 - Exp ID：`phase5_20260501_153130`（`check_phase5`: PASS）
 - G-best variant：`G-high`（mask_dilation=20, denoise_strength=0.75, keyframe_interval=1）
 - Model：`stable-diffusion-v1-5/stable-diffusion-inpainting`，device=cuda（RTX 4080 SUPER）
-- Aggregate（G-high）：`JM=0.6782`，`JR=0.7813`，`Q_REMOVE=0.9464`
-- B→G delta：`delta_JM=+0.0135`，`delta_JR=+0.0125`，`delta_Q_REMOVE=+0.0012`
-- 消融结果：G-low Q_REMOVE=0.9458，G-mid=0.9336，G-high=0.9464，G-hybrid=0.9311
-- 修复 bug（diffusion 输入改为 ProPainter 补全帧而非原始帧）后，Q_REMOVE 相对 B-best 轻微提升（+0.001）；G-high 在大 mask dilation 下纹理生成质量最优。
+- Aggregate（G-high）：`JM=0.6782`，`JR=0.7813`，`TCF=0.0722`
+- B→G delta：`delta_JM=+0.0135`，`delta_JR=+0.0125`，`delta_TCF=+0.0122`
+- 消融结果：G-low TCF=0.0610，G-mid=0.0526，G-high=0.0722，G-hybrid=0.0511
+- 修复 bug（diffusion 输入改为 ProPainter 补全帧而非原始帧）后，TCF 相对 B-best 轻微上升（+0.0122）；G-high 在大 mask dilation 下纹理生成质量最优。
 - 3 个 mandatory 数据集均有完整视频输出与指标。
 
 ---
@@ -285,20 +287,20 @@
 ## 4. 结果表与图（建议最终最少产出）
 
 ## 表 1：总体性能主表（必须）
-| Method | Mask Source | Inpainting | JM↑ | JR↑ | Q_REMOVE↑ |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| A-best | YOLO+Flow | OpenCV |  |  |  |  |
-| B-best | SAM2/TA | ProPainter |  |  |  |  |
-| B+E | refined mask | ProPainter |  |  |  |  |
-| B+F | VGGT4D prior | ProPainter |  |  |  |  |
-| G | refined mask | Diffusion |  |  |  |  |
+| Method | Mask Source | Inpainting | JM↑ | JR↑ | TCF↓ |
+| --- | --- | --- | ---: | ---: | ---: |
+| A-best | YOLO+Flow | OpenCV |  |  |  |
+| B-best | SAM2/TA | ProPainter |  |  |  |
+| B+E | refined mask | ProPainter |  |  |  |
+| B+F | VGGT4D prior | ProPainter |  |  |  |
+| G | refined mask | Diffusion |  |  |  |
 
 ## 表 2：A 路线消融（建议）
-| Setting | Dynamic Filter | Dilation | Inpaint Algo | ROS | TCF | BES | Q_REMOVE |
-| --- | --- | --- | --- | ---: | ---: |
+| Setting | Dynamic Filter | Dilation | Inpaint Algo | ROS | TCF | BES |
+| --- | --- | --- | --- | ---: | ---: | ---: |
 
 ## 表 3：B/E/F 消融（建议）
-| Setting | Temporal Smoothing | Motion Prior | Refinement | JM | JR | Q_REMOVE |
+| Setting | Temporal Smoothing | Motion Prior | Refinement | JM | JR | TCF |
 | --- | --- | --- | --- | ---: | ---: | ---: |
 
 ## 表 4：成本分析（建议）

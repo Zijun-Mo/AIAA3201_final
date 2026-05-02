@@ -107,7 +107,7 @@ class TestPhase1Utils(unittest.TestCase):
             candidate_root=Path("/tmp/high_q"),
             eval_exp_id="exp_high_q",
             summary_path=Path("/tmp/high_q/summary.json"),
-            aggregate={"JM": 0.7, "JR": 0.7, "Q_REMOVE": 0.95},
+            aggregate={"JM": 0.7, "JR": 0.7, "TCF": 0.95},
             per_dataset={},
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.0001, "active_frame_ratio": 0.01},
@@ -120,7 +120,7 @@ class TestPhase1Utils(unittest.TestCase):
             candidate_root=Path("/tmp/covered"),
             eval_exp_id="exp_covered",
             summary_path=Path("/tmp/covered/summary.json"),
-            aggregate={"JM": 0.68, "JR": 0.69, "Q_REMOVE": 0.92},
+            aggregate={"JM": 0.68, "JR": 0.69, "TCF": 0.92},
             per_dataset={},
             mask_stats={
                 "wild": {"mean_mask_ratio": 0.01, "active_frame_ratio": 0.6},

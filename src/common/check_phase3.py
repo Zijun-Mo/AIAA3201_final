@@ -163,7 +163,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             with summary_path.open("r", encoding="utf-8") as f:
                 summary = json.load(f)
             agg = summary.get("aggregate", {}) or {}
-            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+            for key in ["ROS", "TCF", "BES"]:
                 if key not in agg:
                     issues.append(f"missing aggregate metric '{key}' in {summary_path}")
             for key in ["PSNR", "SSIM"]:
@@ -177,7 +177,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
         try:
             with per_dataset_csv.open("r", encoding="utf-8") as f:
                 headers = set(csv.DictReader(f).fieldnames or [])
-            for key in ["ROS", "TCF", "BES", "Q_REMOVE"]:
+            for key in ["ROS", "TCF", "BES"]:
                 if key not in headers:
                     issues.append(f"missing column '{key}' in {per_dataset_csv}")
             for key in ["PSNR", "SSIM"]:
@@ -191,7 +191,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
         try:
             with compare_csv.open("r", encoding="utf-8") as f:
                 headers = set(csv.DictReader(f).fieldnames or [])
-            for key in ["delta_Q_REMOVE", "delta_JM", "delta_JR"]:
+            for key in ["delta_TCF", "delta_JM", "delta_JR"]:
                 if key not in headers:
                     issues.append(f"missing comparison column '{key}' in {compare_csv}")
             for key in ["delta_PSNR", "delta_SSIM", "B_PSNR", "E_PSNR", "B_SSIM", "E_SSIM"]:

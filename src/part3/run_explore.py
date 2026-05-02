@@ -620,7 +620,7 @@ def dataset_metric_aggregate(
     per_dataset: dict[str, Any],
     datasets_for_scoring: list[str] | None,
 ) -> dict[str, float]:
-    keys = ["JM", "JR", "ROS", "TCF", "BES", "Q_REMOVE"]
+    keys = ["JM", "JR", "ROS", "TCF", "BES"]
     values: dict[str, list[float]] = {k: [] for k in keys}
 
     if datasets_for_scoring:
@@ -650,15 +650,17 @@ def stage_score(
 ) -> tuple[float, float, float, float]:
     jm = float(agg.get("JM", float("-inf")))
     jr = float(agg.get("JR", float("-inf")))
-    q_remove = float(agg.get("Q_REMOVE", float("-inf")))
+    tcf = float(agg.get("TCF", float("inf")))
+    if not np.isfinite(tcf):
+        tcf = float("inf")
     mode = normalize_selection_primary_metric(primary_metric, default="auto")
     if mode == "mask":
-        return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
+        return (jm, jr, -tcf, -abs(mean_mask_ratio - 0.1))
     if mode == "quality":
-        return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
+        return (-tcf, jm, jr, -abs(mean_mask_ratio - 0.1))
     if stage in {"E1", "E2", "E3", "F1", "F2", "F3"}:
-        return (jm, jr, q_remove, -abs(mean_mask_ratio - 0.1))
-    return (q_remove, jm, jr, -abs(mean_mask_ratio - 0.1))
+        return (jm, jr, -tcf, -abs(mean_mask_ratio - 0.1))
+    return (-tcf, jm, jr, -abs(mean_mask_ratio - 0.1))
 
 
 def parse_selection_coverage_constraints(selection_cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -997,7 +999,6 @@ def write_ablation_outputs(
             "ROS": r.aggregate.get("ROS"),
             "TCF": r.aggregate.get("TCF"),
             "BES": r.aggregate.get("BES"),
-            "Q_REMOVE": r.aggregate.get("Q_REMOVE"),
             "mean_mask_ratio": mean_ratio,
             "active_frame_ratio": active_ratio,
             "pred_root": str(r.candidate_root),
@@ -1028,7 +1029,6 @@ def write_ablation_outputs(
                 "ROS",
                 "TCF",
                 "BES",
-                "Q_REMOVE",
                 "mean_mask_ratio",
                 "active_frame_ratio",
                 "pred_root",
@@ -1083,9 +1083,6 @@ def write_b_vs_e_comparison(
             "B_BES": bm.get("BES"),
             "E_BES": em.get("BES"),
             "delta_BES": None if bm.get("BES") is None or em.get("BES") is None else float(em.get("BES")) - float(bm.get("BES")),
-            "B_Q_REMOVE": bm.get("Q_REMOVE"),
-            "E_Q_REMOVE": em.get("Q_REMOVE"),
-            "delta_Q_REMOVE": None if bm.get("Q_REMOVE") is None or em.get("Q_REMOVE") is None else float(em.get("Q_REMOVE")) - float(bm.get("Q_REMOVE")),
         }
         rows.append(row)
 
@@ -1109,9 +1106,6 @@ def write_b_vs_e_comparison(
             "B_BES": b_agg.get("BES"),
             "E_BES": e_agg.get("BES"),
             "delta_BES": None if b_agg.get("BES") is None or e_agg.get("BES") is None else float(e_agg.get("BES")) - float(b_agg.get("BES")),
-            "B_Q_REMOVE": b_agg.get("Q_REMOVE"),
-            "E_Q_REMOVE": e_agg.get("Q_REMOVE"),
-            "delta_Q_REMOVE": None if b_agg.get("Q_REMOVE") is None or e_agg.get("Q_REMOVE") is None else float(e_agg.get("Q_REMOVE")) - float(b_agg.get("Q_REMOVE")),
         }
     )
 
@@ -1136,9 +1130,6 @@ def write_b_vs_e_comparison(
                 "B_BES",
                 "E_BES",
                 "delta_BES",
-                "B_Q_REMOVE",
-                "E_Q_REMOVE",
-                "delta_Q_REMOVE",
             ],
         )
         writer.writeheader()
@@ -1162,7 +1153,7 @@ def write_b_vs_f_comparison(
 
     rows: list[dict[str, Any]] = []
     names = sorted(set(b_ds.keys()) | set(f_ds.keys()))
-    metric_keys = ["JM", "JR", "ROS", "TCF", "BES", "Q_REMOVE"]
+    metric_keys = ["JM", "JR", "ROS", "TCF", "BES"]
     for ds in names:
         bm = (b_ds.get(ds, {}) or {}).get("metrics", {}) or {}
         fm = (f_ds.get(ds, {}) or {}).get("metrics", {}) or {}
@@ -1243,10 +1234,10 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
-    lines.append("| JM | JR | ROS | TCF | BES | Q_REMOVE |")
-    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| JM | JR | ROS | TCF | BES |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: |")
     lines.append(
-        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} | {aggregate.get('Q_REMOVE')} |"
+        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} |"
     )
     lines.append("")
 
@@ -1281,12 +1272,12 @@ def write_acceptance_report(
 
     lines.append("## Per-Dataset Metrics")
     lines.append("")
-    lines.append("| Dataset | JM | JR | ROS | TCF | BES | Q_REMOVE |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| Dataset | JM | JR | ROS | TCF | BES |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
     for ds_name, ds_payload in per_dataset.items():
         metrics = ds_payload.get("metrics", {}) if isinstance(ds_payload, dict) else {}
         lines.append(
-            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} | {metrics.get('Q_REMOVE')} |"
+            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} |"
         )
     lines.append("")
 
@@ -1970,7 +1961,7 @@ def main() -> None:
             stage_masks[spec.name] = produced_masks
 
             logger.info(
-                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f Q_REMOVE=%.4f",
+                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f",
                 stage,
                 spec.name,
                 metric_or_neg_inf(result.aggregate, "JM"),
@@ -1978,7 +1969,6 @@ def main() -> None:
                 metric_or_neg_inf(result.aggregate, "ROS"),
                 metric_or_neg_inf(result.aggregate, "TCF"),
                 metric_or_neg_inf(result.aggregate, "BES"),
-                metric_or_neg_inf(result.aggregate, "Q_REMOVE"),
             )
 
         if not stage_results:

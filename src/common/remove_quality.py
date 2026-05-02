@@ -296,20 +296,11 @@ def compute_bes_per_frame(
     return values, int(empty_count)
 
 
-def q_remove_from_components(ros: float, tcf: float, bes: float, weights: dict[str, float]) -> float:
-    score = 1.0 - (
-        float(weights.get("ros", 0.5)) * float(ros)
-        + float(weights.get("tcf", 0.3)) * float(tcf)
-        + float(weights.get("bes", 0.2)) * float(bes)
-    )
-    return float(max(0.0, min(1.0, score)))
-
-
 def compute_remove_quality(
     frames_bgr: list[np.ndarray],
     masks_u8: list[np.ndarray],
     detector: DynamicObjectDetector,
-    quality_weights: dict[str, float],
+    _quality_weights: dict[str, float],
     tcf_dilate_kernel: int,
     bes_dilate_kernel: int,
     bes_erode_kernel: int,
@@ -317,7 +308,7 @@ def compute_remove_quality(
 ) -> tuple[dict[str, Any], list[dict[str, float]], dict[str, Any]]:
     if not frames_bgr:
         return (
-            {"ROS": 0.0, "TCF": 0.0, "BES": 0.0, "Q_REMOVE": 1.0, "video_frame_count": 0},
+            {"ROS": 0.0, "TCF": 0.0, "BES": 0.0, "video_frame_count": 0},
             [],
             {
                 "ros_backend_use_count": {},
@@ -351,7 +342,6 @@ def compute_remove_quality(
                 "ROS": float(ros),
                 "TCF": float(tcf),
                 "BES": float(bes),
-                "Q_REMOVE": q_remove_from_components(ros=float(ros), tcf=float(tcf), bes=float(bes), weights=quality_weights),
             }
         )
 
@@ -363,7 +353,6 @@ def compute_remove_quality(
         "ROS": ros_m,
         "TCF": tcf_m,
         "BES": bes_m,
-        "Q_REMOVE": q_remove_from_components(ros=ros_m, tcf=tcf_m, bes=bes_m, weights=quality_weights),
         "video_frame_count": int(len(frames_bgr)),
     }
     notes = {
