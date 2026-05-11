@@ -69,7 +69,7 @@ def check_metrics(metrics_dir: Path) -> list[str]:
         metrics_dir / "phase4_ablation.csv",
         metrics_dir / "phase4_selection.json",
         metrics_dir / "phase4_b_vs_f.csv",
-        metrics_dir / "phase4_mask_priors.csv",
+        metrics_dir / "phase4_backend_priors.csv",
         metrics_dir / "phase4_acceptance_report.md",
         metrics_dir / "phase4_run_meta.json",
     ]
@@ -83,33 +83,36 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             with summary_path.open("r", encoding="utf-8") as f:
                 summary = json.load(f)
             agg = summary.get("aggregate", {}) or {}
-            for key in ["JM", "JR", "ROS", "TCF", "BES"]:
+            for key in ["GT_Coverage", "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]:
                 if key not in agg:
                     issues.append(f"summary missing aggregate metric: {key}")
+            for key in ["ROS", "BES"]:
+                if key in agg:
+                    issues.append(f"summary contains removed metric: {key}")
         except Exception as e:
             issues.append(f"invalid summary.json ({e})")
 
-    priors_csv = metrics_dir / "phase4_mask_priors.csv"
+    priors_csv = metrics_dir / "phase4_backend_priors.csv"
     if priors_csv.exists():
         try:
             with priors_csv.open("r", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
             needed = {
-                (row.get("dataset", ""), row.get("prior", ""))
+                (row.get("dataset", ""), row.get("role", ""))
                 for row in rows
             }
             for ds in ["wild", "bmx-trees", "tennis"]:
-                for prior in ["yolo", "vggt4d", "vggt4d_yolo"]:
-                    if (ds, prior) not in needed:
-                        issues.append(f"phase4_mask_priors.csv missing row: dataset={ds}, prior={prior}")
+                for role in ["vggt4d_raw", "b_best_backend", "alternate_backend"]:
+                    if (ds, role) not in needed:
+                        issues.append(f"phase4_backend_priors.csv missing row: dataset={ds}, role={role}")
             for row in rows:
-                if row.get("prior", "") == "vggt4d" and not row.get("source", "").startswith("vggt4d_with_bbest_backend_"):
+                if row.get("role", "") in {"b_best_backend", "alternate_backend"} and not row.get("source", "").startswith("vggt4d_with_backend_"):
                     issues.append(
-                        "phase4_mask_priors.csv vggt4d rows must use source=vggt4d_with_bbest_backend_<backend>"
+                        "phase4_backend_priors.csv backend rows must use source=vggt4d_with_backend_<backend>"
                     )
                     break
         except Exception as e:
-            issues.append(f"invalid phase4_mask_priors.csv ({e})")
+            issues.append(f"invalid phase4_backend_priors.csv ({e})")
 
     run_meta_path = metrics_dir / "phase4_run_meta.json"
     if run_meta_path.exists():
@@ -118,16 +121,44 @@ def check_metrics(metrics_dir: Path) -> list[str]:
                 run_meta = json.load(f)
             if not bool(run_meta.get("has_f_stages", False)):
                 issues.append("phase4_run_meta.json has_f_stages=false")
-            if run_meta.get("phase4_final_policy") != "force_vggt4d_prior":
-                issues.append("phase4_run_meta.json phase4_final_policy must be force_vggt4d_prior")
-            for key in ["final_best", "f_best"]:
-                spec = run_meta.get(key, {}) or {}
-                if spec.get("f_source_key", "") != "vggt4d":
-                    issues.append(f"phase4_run_meta.json {key}.f_source_key must be vggt4d")
+            if run_meta.get("phase4_final_policy") != "maskscore":
+                issues.append("phase4_run_meta.json phase4_final_policy must be maskscore")
             if run_meta.get("phase4_bbest_backend") not in {"sam2", "trackanything"}:
                 issues.append("phase4_run_meta.json phase4_bbest_backend must be sam2 or trackanything")
+            if run_meta.get("phase4_alternate_backend") not in {"sam2", "trackanything"}:
+                issues.append("phase4_run_meta.json phase4_alternate_backend must be sam2 or trackanything")
+            if run_meta.get("phase4_alternate_backend") == run_meta.get("phase4_bbest_backend"):
+                issues.append("phase4 alternate backend must differ from B-best backend")
         except Exception as e:
             issues.append(f"invalid phase4_run_meta.json ({e})")
+
+    ablation_path = metrics_dir / "phase4_ablation.csv"
+    if ablation_path.exists():
+        try:
+            with ablation_path.open("r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+            scored = []
+            final_rows = []
+            for row in rows:
+                try:
+                    score = float(row.get("MaskScore", "nan"))
+                except ValueError:
+                    continue
+                if score == score:
+                    scored.append((score, row))
+                if str(row.get("is_final_best", "")).strip() == "1":
+                    final_rows.append(row)
+            if scored and final_rows:
+                best_score = max(score for score, _ in scored)
+                final_score = max(float(row.get("MaskScore", "nan")) for row in final_rows)
+                if final_score + 1e-9 < best_score:
+                    issues.append(
+                        f"phase4 final MaskScore {final_score:.6f} is below ablation best {best_score:.6f}"
+                    )
+            elif scored:
+                issues.append("phase4_ablation.csv has no final best row")
+        except Exception as e:
+            issues.append(f"invalid phase4_ablation.csv ({e})")
 
     return issues
 

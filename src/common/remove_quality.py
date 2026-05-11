@@ -171,7 +171,7 @@ class DynamicObjectDetector:
                 errors.append(f"{backend}:{e}")
                 continue
 
-        raise RuntimeError(f"ROS detection failed for all backends: {errors}")
+        raise RuntimeError(f"dynamic-object detection failed for all backends: {errors}")
 
 
 def normalize_odd_kernel(k: int) -> int:
@@ -202,28 +202,6 @@ def ensure_masks_aligned(masks_u8: list[np.ndarray], frame_count: int, frame_sha
     return aligned
 
 
-def compute_ros_per_frame(
-    frames_bgr: list[np.ndarray],
-    detector: DynamicObjectDetector,
-) -> tuple[list[float], dict[str, Any]]:
-    values: list[float] = []
-    backend_use_count: dict[str, int] = {}
-    fallback_count = 0
-
-    for frame in frames_bgr:
-        mask, meta = detector.detect_mask(frame)
-        ratio = float((mask > 0).sum() / float(mask.shape[0] * mask.shape[1]))
-        values.append(ratio)
-        backend_use_count[meta.backend_used] = int(backend_use_count.get(meta.backend_used, 0) + 1)
-        if meta.fallback_used:
-            fallback_count += 1
-
-    return values, {
-        "ros_backend_use_count": backend_use_count,
-        "ros_fallback_frame_count": int(fallback_count),
-    }
-
-
 def compute_tcf_per_frame(
     frames_bgr: list[np.ndarray],
     masks_u8: list[np.ndarray],
@@ -247,7 +225,7 @@ def compute_tcf_per_frame(
         grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
         map_x = grid_x + flow[..., 0]
         map_y = grid_y + flow[..., 1]
-        warped = cv2.remap(g0, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        warped = cv2.remap(frames_bgr[idx], map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
         m0 = cv2.dilate((masks_u8[idx] > 0).astype(np.uint8) * 255, k)
         m1 = cv2.dilate((masks_u8[idx + 1] > 0).astype(np.uint8) * 255, k)
@@ -257,41 +235,8 @@ def compute_tcf_per_frame(
             empty_count += 1
             continue
 
-        diff = np.abs(warped.astype(np.float32) - g1.astype(np.float32)) / 255.0
+        diff = np.abs(warped.astype(np.float32) - frames_bgr[idx + 1].astype(np.float32)) / 255.0
         values.append(float(diff[roi].mean()))
-
-    return values, int(empty_count)
-
-
-def compute_bes_per_frame(
-    frames_bgr: list[np.ndarray],
-    masks_u8: list[np.ndarray],
-    dilate_kernel: int,
-    erode_kernel: int,
-    sobel_ksize: int,
-) -> tuple[list[float], int]:
-    k_d = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (normalize_odd_kernel(dilate_kernel), normalize_odd_kernel(dilate_kernel)))
-    k_e = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (normalize_odd_kernel(erode_kernel), normalize_odd_kernel(erode_kernel)))
-    k_s = normalize_odd_kernel(sobel_ksize)
-
-    values: list[float] = []
-    empty_count = 0
-
-    for frame, mask in zip(frames_bgr, masks_u8):
-        binary = (mask > 0).astype(np.uint8) * 255
-        ring = cv2.subtract(cv2.dilate(binary, k_d), cv2.erode(binary, k_e)) > 0
-
-        if not np.any(ring):
-            values.append(0.0)
-            empty_count += 1
-            continue
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=k_s)
-        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=k_s)
-        mag = np.sqrt(gx * gx + gy * gy)
-        mag = np.clip(mag / 255.0, 0.0, 1.0)
-        values.append(float(mag[ring].mean()))
 
     return values, int(empty_count)
 
@@ -299,66 +244,43 @@ def compute_bes_per_frame(
 def compute_remove_quality(
     frames_bgr: list[np.ndarray],
     masks_u8: list[np.ndarray],
-    detector: DynamicObjectDetector,
-    quality_weights: dict[str, float],
-    tcf_dilate_kernel: int,
-    bes_dilate_kernel: int,
-    bes_erode_kernel: int,
-    bes_sobel_ksize: int,
+    tcf_dilate_kernel: int = 5,
 ) -> tuple[dict[str, Any], list[dict[str, float]], dict[str, Any]]:
-    _ = quality_weights
     if not frames_bgr:
         return (
-            {"ROS": 0.0, "TCF": 0.0, "BES": 0.0, "video_frame_count": 0},
+            {"TCF": 0.0, "video_frame_count": 0},
             [],
             {
-                "ros_backend_use_count": {},
-                "ros_fallback_frame_count": 0,
                 "tcf_empty_region_frame_count": 0,
-                "bes_empty_region_frame_count": 0,
+                "tcf_color_space": "bgr",
             },
         )
 
     h, w = frames_bgr[0].shape[:2]
     aligned_masks = ensure_masks_aligned(masks_u8, frame_count=len(frames_bgr), frame_shape=(h, w))
 
-    ros_vals, ros_meta = compute_ros_per_frame(frames_bgr=frames_bgr, detector=detector)
     tcf_vals, tcf_empty = compute_tcf_per_frame(
         frames_bgr=frames_bgr,
         masks_u8=aligned_masks,
         dilate_kernel=tcf_dilate_kernel,
     )
-    bes_vals, bes_empty = compute_bes_per_frame(
-        frames_bgr=frames_bgr,
-        masks_u8=aligned_masks,
-        dilate_kernel=bes_dilate_kernel,
-        erode_kernel=bes_erode_kernel,
-        sobel_ksize=bes_sobel_ksize,
-    )
 
     frame_metrics: list[dict[str, float]] = []
-    for ros, tcf, bes in zip(ros_vals, tcf_vals, bes_vals):
+    for tcf in tcf_vals:
         frame_metrics.append(
             {
-                "ROS": float(ros),
                 "TCF": float(tcf),
-                "BES": float(bes),
             }
         )
 
-    ros_m = float(np.mean(np.array(ros_vals, dtype=np.float32))) if ros_vals else 0.0
     tcf_m = float(np.mean(np.array(tcf_vals, dtype=np.float32))) if tcf_vals else 0.0
-    bes_m = float(np.mean(np.array(bes_vals, dtype=np.float32))) if bes_vals else 0.0
 
     metrics = {
-        "ROS": ros_m,
         "TCF": tcf_m,
-        "BES": bes_m,
         "video_frame_count": int(len(frames_bgr)),
     }
     notes = {
-        **ros_meta,
         "tcf_empty_region_frame_count": int(tcf_empty),
-        "bes_empty_region_frame_count": int(bes_empty),
+        "tcf_color_space": "bgr",
     }
     return metrics, frame_metrics, notes

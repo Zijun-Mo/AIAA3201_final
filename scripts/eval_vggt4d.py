@@ -75,7 +75,6 @@ def main():
             "--pred-root", str(OUT_PRED),
             "--gt-root", str(GT_ROOT),
             "--exp-id", "vggt4d_only",
-            "--output-dir", str(REPO_ROOT / "outputs/metrics/vggt4d_only"),
         ],
         cwd=str(REPO_ROOT),
     )

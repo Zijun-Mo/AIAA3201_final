@@ -16,12 +16,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.common.remove_quality import (
-    DEFAULT_DYNAMIC_CLASSES,
-    DynamicObjectDetector,
-    compute_remove_quality,
-    ensure_masks_aligned,
-)
+from src.common.fast_vqa import compute_fast_vqa_for_video
+from src.common.mask_ranking import GT_COVERAGE_KEY, mask_score
+from src.common.remove_quality import compute_remove_quality, ensure_masks_aligned
 from src.common.video_io import dataset_video_paths, decode_video_frames, resolve_output_policy
 
 
@@ -167,18 +164,25 @@ def compute_mask_metrics(
         return None, "no usable mask pairs for JM/JR"
 
     scores = []
+    gt_coverages = []
     for pm, gm in pairs:
         pm_bin = np.asarray(pm) > 0
         gm_bin = np.asarray(gm) > 0
         inter = np.logical_and(pm_bin, gm_bin).sum()
         union = np.logical_or(pm_bin, gm_bin).sum()
+        gt_area = gm_bin.sum()
+        pred_area = pm_bin.sum()
         iou = float(inter / union) if union > 0 else 1.0
+        gt_coverage = float(inter / gt_area) if gt_area > 0 else (1.0 if pred_area == 0 else 0.0)
         scores.append(iou)
+        gt_coverages.append(gt_coverage)
 
     arr = np.array(scores, dtype=np.float32)
+    cov_arr = np.array(gt_coverages, dtype=np.float32)
     metrics = {
         "JM": float(arr.mean()),
         "JR": float((arr >= threshold).mean()),
+        "GT_Coverage": float(cov_arr.mean()),
         "mask_frame_count": int(len(arr)),
         "mask_match_mode": match_mode,
         "mask_filename_matches": int(matched_by_name),
@@ -284,7 +288,7 @@ def load_prediction_dataset(
             )
         source = "video"
         frames = [np.asarray(f) for f in decoded_frames]
-        frame_names = [f"frame_{idx + 1:06d}.png" for idx in range(len(frames))]
+        frame_names = [f"frame_{idx:06d}.png" for idx in range(len(frames))]
         decoded_masks = decode_video_frames(mask_video_path, as_gray=True) if mask_video_path.exists() else []
         for idx, frame in enumerate(frames):
             if idx < len(decoded_masks):
@@ -310,7 +314,7 @@ def load_prediction_dataset(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Unified evaluation entry for JM/JR + ROS/TCF/BES (schema v2_remove_quality). "
+            "Unified evaluation entry for GT_Coverage/JM/JR + color TCF + FAST-VQA. "
             "Inputs support either <dataset>/frames+masks or restored_h264.mp4+mask_h264.mp4."
         )
     )
@@ -337,30 +341,14 @@ def main() -> None:
         else bool(eval_cfg.get("save_visualization", True))
     )
     jr_threshold = float(eval_cfg.get("jr_iou_threshold", 0.5))
-    metric_schema_version = str(eval_cfg.get("metric_schema_version", "v2_remove_quality"))
+    metric_schema_version = str(eval_cfg.get("metric_schema_version", "v4_maskscore_color_tcf_fastvqa"))
     output_policy = resolve_output_policy(config)
-
-    quality_weights = (eval_cfg.get("quality_weights", {}) or {})
-    quality_weights = {
-        "ros": float(quality_weights.get("ros", 0.5)),
-        "tcf": float(quality_weights.get("tcf", 0.3)),
-        "bes": float(quality_weights.get("bes", 0.2)),
-    }
 
     selection_cfg = eval_cfg.get("selection", {}) or {}
     exclude_for_aggregate = [str(x).strip() for x in (selection_cfg.get("exclude_datasets", []) or []) if str(x).strip()]
 
-    ros_cfg = eval_cfg.get("ros", {}) or {}
-    ros_backend_priority = [str(x).strip().lower() for x in (ros_cfg.get("backend_priority", ["yolo", "maskrcnn"]) or []) if str(x).strip()]
-
-    part1_cfg = config.get("part1", {}) or {}
-    seg_cfg = part1_cfg.get("segmentation", {}) or {}
-    dynamic_classes = set(str(x).strip().lower() for x in (part1_cfg.get("dynamic_classes", DEFAULT_DYNAMIC_CLASSES) or []) if str(x).strip())
-    if not dynamic_classes:
-        dynamic_classes = set(DEFAULT_DYNAMIC_CLASSES)
-
     tcf_cfg = eval_cfg.get("tcf", {}) or {}
-    bes_cfg = eval_cfg.get("bes", {}) or {}
+    fast_vqa_cfg = eval_cfg.get("fast_vqa", {}) or {}
 
     all_names, mandatory_names = collect_datasets(config)
     selected_names = resolve_dataset_names(args.datasets, all_names, mandatory_names)
@@ -369,16 +357,6 @@ def main() -> None:
     figures_dir = Path("outputs/figures") / args.exp_id
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
-
-    detector = DynamicObjectDetector(
-        backend_priority=ros_backend_priority,
-        dynamic_classes=dynamic_classes,
-        yolo_model=str(seg_cfg.get("yolo_model", "yolov8n-seg.pt")),
-        yolo_conf=float(seg_cfg.get("yolo_conf_threshold", 0.25)),
-        yolo_imgsz=int(seg_cfg.get("yolo_imgsz", 960)),
-        maskrcnn_conf=float(seg_cfg.get("maskrcnn_conf_threshold", 0.5)),
-        device=str(ros_cfg.get("device", "cpu")).strip().lower(),
-    )
 
     summary = {
         "exp_id": args.exp_id,
@@ -389,7 +367,9 @@ def main() -> None:
         "allow_missing_gt": allow_missing_gt,
         "jr_iou_threshold": jr_threshold,
         "metric_schema_version": metric_schema_version,
-        "quality_weights": quality_weights,
+        "quality_metrics": ["TCF", "FAST_VQA"],
+        "tcf": {"color_space": "bgr", **tcf_cfg},
+        "fast_vqa": fast_vqa_cfg,
         "output_policy": output_policy,
         "selection": {"exclude_datasets": exclude_for_aggregate},
         "datasets": {},
@@ -399,9 +379,9 @@ def main() -> None:
     rows = []
     jm_vals: list[float] = []
     jr_vals: list[float] = []
-    ros_vals: list[float] = []
+    gt_coverage_vals: list[float] = []
     tcf_vals: list[float] = []
-    bes_vals: list[float] = []
+    fast_vqa_vals: list[float] = []
 
     exclude_set = set(exclude_for_aggregate)
     for dataset in selected_names:
@@ -435,30 +415,30 @@ def main() -> None:
         remove_metrics, frame_metrics, remove_notes = compute_remove_quality(
             frames_bgr=pred_frames,
             masks_u8=pred_masks,
-            detector=detector,
-            quality_weights=quality_weights,
             tcf_dilate_kernel=int(tcf_cfg.get("dilate_kernel", 5)),
-            bes_dilate_kernel=int(bes_cfg.get("dilate_kernel", 5)),
-            bes_erode_kernel=int(bes_cfg.get("erode_kernel", 3)),
-            bes_sobel_ksize=int(bes_cfg.get("sobel_ksize", 3)),
         )
         ds_result["metrics"].update(remove_metrics)
+        fast_vqa_score, fast_vqa_meta = compute_fast_vqa_for_video(
+            Path(pred_paths_meta.get("pred_restored_video", "")),
+            fast_vqa_cfg,
+            repo_root=REPO_ROOT,
+        )
+        ds_result["metrics"]["FAST_VQA"] = fast_vqa_score
         ds_result["quality_detail"] = {
             "frame_metrics_path": str(metrics_dir / f"{dataset}_frame_metrics.csv"),
             **remove_notes,
+            "fast_vqa": fast_vqa_meta,
         }
         if int(remove_notes.get("tcf_empty_region_frame_count", 0)) > 0:
             ds_result["notes"].append(
                 f"TCF empty-region frames set to 0: {int(remove_notes.get('tcf_empty_region_frame_count', 0))}"
             )
-        if int(remove_notes.get("bes_empty_region_frame_count", 0)) > 0:
-            ds_result["notes"].append(
-                f"BES empty-region frames set to 0: {int(remove_notes.get('bes_empty_region_frame_count', 0))}"
-            )
+        if fast_vqa_score is None:
+            ds_result["notes"].append(f"FAST_VQA unavailable: {fast_vqa_meta.get('status')}")
 
         frame_metrics_path = metrics_dir / f"{dataset}_frame_metrics.csv"
         with frame_metrics_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["frame_idx", "ROS", "TCF", "BES"])
+            writer = csv.DictWriter(f, fieldnames=["frame_idx", "TCF"])
             writer.writeheader()
             for idx, item in enumerate(frame_metrics):
                 writer.writerow({"frame_idx": idx, **item})
@@ -475,6 +455,7 @@ def main() -> None:
             )
             if mask_metrics is not None:
                 ds_result["metrics"].update(mask_metrics)
+                ds_result["metrics"]["MaskScore"] = mask_score(ds_result["metrics"])
             else:
                 ds_result["notes"].append(f"mask metrics skipped: {mask_note}")
 
@@ -495,11 +476,13 @@ def main() -> None:
             jm_vals.append(float(ds_metrics["JM"]))
         if ds_metrics.get("JR") is not None:
             jr_vals.append(float(ds_metrics["JR"]))
+        if ds_metrics.get("GT_Coverage") is not None:
+            gt_coverage_vals.append(float(ds_metrics["GT_Coverage"]))
 
         if dataset not in exclude_set:
-            ros_vals.append(float(ds_metrics.get("ROS", 0.0)))
             tcf_vals.append(float(ds_metrics.get("TCF", 0.0)))
-            bes_vals.append(float(ds_metrics.get("BES", 0.0)))
+            if ds_metrics.get("FAST_VQA") is not None:
+                fast_vqa_vals.append(float(ds_metrics["FAST_VQA"]))
 
         rows.append(
             {
@@ -507,12 +490,13 @@ def main() -> None:
                 "status": ds_result["status"],
                 "JM": ds_metrics.get("JM", ""),
                 "JR": ds_metrics.get("JR", ""),
-                "ROS": ds_metrics.get("ROS", ""),
+                GT_COVERAGE_KEY: ds_metrics.get(GT_COVERAGE_KEY, ""),
+                "MaskScore": ds_metrics.get("MaskScore", ""),
                 "TCF": ds_metrics.get("TCF", ""),
-                "BES": ds_metrics.get("BES", ""),
+                "FAST_VQA": ds_metrics.get("FAST_VQA", ""),
                 "mask_frame_count": ds_metrics.get("mask_frame_count", ""),
                 "video_frame_count": ds_metrics.get("video_frame_count", ""),
-                "ros_fallback_frame_count": (ds_result.get("quality_detail", {}) or {}).get("ros_fallback_frame_count", ""),
+                "fast_vqa_status": ((ds_result.get("quality_detail", {}) or {}).get("fast_vqa", {}) or {}).get("status", ""),
                 "notes": " | ".join(ds_result["notes"]),
             }
         )
@@ -523,10 +507,11 @@ def main() -> None:
         "aggregated_excluding": exclude_for_aggregate,
         "JM": float(np.mean(np.array(jm_vals))) if jm_vals else None,
         "JR": float(np.mean(np.array(jr_vals))) if jr_vals else None,
-        "ROS": float(np.mean(np.array(ros_vals))) if ros_vals else None,
+        GT_COVERAGE_KEY: float(np.mean(np.array(gt_coverage_vals))) if gt_coverage_vals else None,
         "TCF": float(np.mean(np.array(tcf_vals))) if tcf_vals else None,
-        "BES": float(np.mean(np.array(bes_vals))) if bes_vals else None,
+        "FAST_VQA": float(np.mean(np.array(fast_vqa_vals))) if fast_vqa_vals else None,
     }
+    summary["aggregate"]["MaskScore"] = mask_score(summary["aggregate"])
 
     summary_path = metrics_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as f:
@@ -541,12 +526,13 @@ def main() -> None:
                 "status",
                 "JM",
                 "JR",
-                "ROS",
+                GT_COVERAGE_KEY,
+                "MaskScore",
                 "TCF",
-                "BES",
+                "FAST_VQA",
                 "mask_frame_count",
                 "video_frame_count",
-                "ros_fallback_frame_count",
+                "fast_vqa_status",
                 "notes",
             ],
         )

@@ -36,7 +36,8 @@ from src.part1.run_baseline import (
     str2bool,
     write_dataset_outputs,
 )
-from src.common.remove_quality import DynamicObjectDetector, compute_remove_quality
+from src.common.remove_quality import compute_remove_quality
+from src.common.mask_ranking import GT_COVERAGE_KEY, mask_score, mask_tiebreak_key, select_maskscore_best
 from src.common.video_io import (
     cleanup_named_subdirs,
     cleanup_video_only_outputs,
@@ -694,7 +695,7 @@ def dataset_metric_aggregate(
     per_dataset: dict[str, Any],
     datasets_for_scoring: list[str] | None,
 ) -> dict[str, float]:
-    keys = ["JM", "JR", "ROS", "TCF", "BES"]
+    keys = ["JM", "JR", "GT_Coverage", "TCF", "FAST_VQA"]
     values: dict[str, list[float]] = {k: [] for k in keys}
 
     if datasets_for_scoring:
@@ -2145,17 +2146,8 @@ def metric_or_neg_inf(agg: dict[str, Any], key: str) -> float:
     return float(value)
 
 
-def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float]:
-    jm = metric_or_neg_inf(agg, "JM")
-    jr = metric_or_neg_inf(agg, "JR")
-    tcf_value = agg.get("TCF", None)
-    tcf = float(tcf_value) if tcf_value is not None else float("inf")
-    if not np.isfinite(tcf):
-        tcf = float("inf")
-
-    if stage in {"B1", "B3", "B5"}:
-        return (jm, jr, -tcf, -abs(mean_mask_ratio - 0.1))
-    return (-tcf, jm, jr, -abs(mean_mask_ratio - 0.1))
+def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, ...]:
+    return mask_tiebreak_key(agg, mean_mask_ratio=mean_mask_ratio)
 
 
 def parse_selection_coverage_constraints(selection_cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -2242,18 +2234,27 @@ def select_best(
         else:
             raise ValueError(f"No candidate meets coverage constraints in stage {stage}: {constraints}")
 
-    def score(entry: CandidateResult) -> tuple[float, float, float, float]:
+    def mean_ratio_for(entry: CandidateResult) -> float:
         if score_datasets:
             ratios = [
                 (entry.mask_stats.get(ds, {}) or {}).get("mean_mask_ratio", 0.0) for ds in score_datasets
             ]
         else:
             ratios = [v.get("mean_mask_ratio", 0.0) for v in entry.mask_stats.values()]
-        mean_ratio = float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
-        agg = dataset_metric_aggregate(per_dataset=entry.per_dataset, datasets_for_scoring=score_datasets)
-        return stage_score(stage, agg, mean_ratio)
+        return float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
 
-    return max(pool, key=score)
+    def score(entry: CandidateResult) -> tuple[float, ...]:
+        agg = dataset_metric_aggregate(per_dataset=entry.per_dataset, datasets_for_scoring=score_datasets)
+        return stage_score(stage, agg, mean_ratio_for(entry))
+
+    return select_maskscore_best(
+        pool,
+        lambda entry: dataset_metric_aggregate(per_dataset=entry.per_dataset, datasets_for_scoring=score_datasets),
+        tiebreak_fn=lambda entry: mask_tiebreak_key(
+            dataset_metric_aggregate(per_dataset=entry.per_dataset, datasets_for_scoring=score_datasets),
+            mean_mask_ratio=mean_ratio_for(entry),
+        ),
+    )
 
 
 def copy_b_best(best_candidate_root: Path, final_root: Path, datasets: list[str]) -> None:
@@ -2269,9 +2270,7 @@ def copy_b_best(best_candidate_root: Path, final_root: Path, datasets: list[str]
 
 def classify_failure_case(
     dataset: str,
-    ros: float,
     tcf: float,
-    bes: float,
     backend_fallback: bool,
     propainter_fallback: bool,
 ) -> str:
@@ -2279,12 +2278,8 @@ def classify_failure_case(
         return "mask_backend_fallback"
     if propainter_fallback:
         return "propainter_profile_fallback"
-    if ros > 0.05:
-        return "residual_object"
     if tcf > 0.12:
         return "temporal_flicker"
-    if bes > 0.15:
-        return "boundary_artifact"
     if dataset == "wild":
         return "wild_domain_gap_suspected"
     return "minor_artifact"
@@ -2295,12 +2290,7 @@ def build_failure_case_index(
     gt_root: Path,
     datasets: list[str],
     out_dir: Path,
-    detector: DynamicObjectDetector,
-    quality_weights: dict[str, float],
     tcf_dilate_kernel: int,
-    bes_dilate_kernel: int,
-    bes_erode_kernel: int,
-    bes_sobel_ksize: int,
     backend_meta: dict[str, dict[str, Any]],
     propainter_meta: dict[str, dict[str, Any]],
     top_k: int = 3,
@@ -2343,12 +2333,7 @@ def build_failure_case_index(
         _, per_frame_metrics, _ = compute_remove_quality(
             frames_bgr=frames,
             masks_u8=masks,
-            detector=detector,
-            quality_weights=quality_weights,
             tcf_dilate_kernel=tcf_dilate_kernel,
-            bes_dilate_kernel=bes_dilate_kernel,
-            bes_erode_kernel=bes_erode_kernel,
-            bes_sobel_ksize=bes_sobel_ksize,
         )
         chosen = sorted(
             [(float(m.get("TCF", 0.0)), idx) for idx, m in enumerate(per_frame_metrics)],
@@ -2360,9 +2345,7 @@ def build_failure_case_index(
             frame_name = frame_names[idx]
             out_img = out_dir / f"{ds}_{Path(frame_name).stem}_rank{rank}_tcf{tcf_score:.4f}.png"
             cv2.imwrite(str(out_img), frame)
-            ros = float(per_frame_metrics[idx].get("ROS", 0.0))
             tcf = float(per_frame_metrics[idx].get("TCF", 0.0))
-            bes = float(per_frame_metrics[idx].get("BES", 0.0))
 
             rows.append(
                 {
@@ -2378,9 +2361,7 @@ def build_failure_case_index(
             p_meta = propainter_meta.get(ds, {})
             explanation = classify_failure_case(
                 dataset=ds,
-                ros=ros,
                 tcf=tcf,
-                bes=bes,
                 backend_fallback=bool(b_meta.get("fallback_used", False)),
                 propainter_fallback=str(p_meta.get("status", "")).startswith("ok_fallback")
                 or str(p_meta.get("status", "")) == "fallback_cv2",
@@ -2391,8 +2372,6 @@ def build_failure_case_index(
                     "frame": frame_name,
                     "rank": rank,
                     "tcf": tcf,
-                    "ros": ros,
-                    "bes": bes,
                     "explanation": explanation,
                     "compare_image": str(out_img),
                 }
@@ -2413,8 +2392,6 @@ def build_failure_case_index(
                 "frame",
                 "rank",
                 "tcf",
-                "ros",
-                "bes",
                 "explanation",
                 "compare_image",
             ],
@@ -2454,11 +2431,12 @@ def write_ablation_outputs(
                 "resize_ratio": r.spec.resize_ratio,
                 "mask_dilation": r.spec.mask_dilation,
                 "fp16": int(r.spec.fp16),
+                GT_COVERAGE_KEY: r.aggregate.get(GT_COVERAGE_KEY),
                 "JM": r.aggregate.get("JM"),
                 "JR": r.aggregate.get("JR"),
-                "ROS": r.aggregate.get("ROS"),
+                "MaskScore": mask_score(r.aggregate),
                 "TCF": r.aggregate.get("TCF"),
-                "BES": r.aggregate.get("BES"),
+                "FAST_VQA": r.aggregate.get("FAST_VQA"),
                 "mean_mask_ratio": mean_ratio,
                 "active_frame_ratio": active_ratio,
                 "pred_root": str(r.candidate_root),
@@ -2483,11 +2461,12 @@ def write_ablation_outputs(
                 "resize_ratio",
                 "mask_dilation",
                 "fp16",
+                GT_COVERAGE_KEY,
                 "JM",
                 "JR",
-                "ROS",
+                "MaskScore",
                 "TCF",
-                "BES",
+                "FAST_VQA",
                 "mean_mask_ratio",
                 "active_frame_ratio",
                 "pred_root",
@@ -2525,75 +2504,36 @@ def write_a_vs_b_comparison(
 
     rows: list[dict[str, Any]] = []
     all_names = sorted(set(a_ds.keys()) | set(b_ds.keys()))
+    metric_keys = [GT_COVERAGE_KEY, "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]
     for ds in all_names:
         am = (a_ds.get(ds, {}) or {}).get("metrics", {}) or {}
         bm = (b_ds.get(ds, {}) or {}).get("metrics", {}) or {}
-        row = {
-            "dataset": ds,
-            "A_JM": am.get("JM"),
-            "B_JM": bm.get("JM"),
-            "delta_JM": None if am.get("JM") is None or bm.get("JM") is None else float(bm.get("JM")) - float(am.get("JM")),
-            "A_JR": am.get("JR"),
-            "B_JR": bm.get("JR"),
-            "delta_JR": None if am.get("JR") is None or bm.get("JR") is None else float(bm.get("JR")) - float(am.get("JR")),
-            "A_ROS": am.get("ROS"),
-            "B_ROS": bm.get("ROS"),
-            "delta_ROS": None if am.get("ROS") is None or bm.get("ROS") is None else float(bm.get("ROS")) - float(am.get("ROS")),
-            "A_TCF": am.get("TCF"),
-            "B_TCF": bm.get("TCF"),
-            "delta_TCF": None if am.get("TCF") is None or bm.get("TCF") is None else float(bm.get("TCF")) - float(am.get("TCF")),
-            "A_BES": am.get("BES"),
-            "B_BES": bm.get("BES"),
-            "delta_BES": None if am.get("BES") is None or bm.get("BES") is None else float(bm.get("BES")) - float(am.get("BES")),
-        }
+        row: dict[str, Any] = {"dataset": ds}
+        for key in metric_keys:
+            row[f"A_{key}"] = am.get(key)
+            row[f"B_{key}"] = bm.get(key)
+            row[f"delta_{key}"] = (
+                None if am.get(key) is None or bm.get(key) is None else float(bm[key]) - float(am[key])
+            )
         rows.append(row)
 
     a_agg = phase1_summary.get("aggregate", {}) or {}
     b_agg = phase2_summary.get("aggregate", {}) or {}
-    rows.append(
-        {
-            "dataset": "__aggregate__",
-            "A_JM": a_agg.get("JM"),
-            "B_JM": b_agg.get("JM"),
-            "delta_JM": None if a_agg.get("JM") is None or b_agg.get("JM") is None else float(b_agg.get("JM")) - float(a_agg.get("JM")),
-            "A_JR": a_agg.get("JR"),
-            "B_JR": b_agg.get("JR"),
-            "delta_JR": None if a_agg.get("JR") is None or b_agg.get("JR") is None else float(b_agg.get("JR")) - float(a_agg.get("JR")),
-            "A_ROS": a_agg.get("ROS"),
-            "B_ROS": b_agg.get("ROS"),
-            "delta_ROS": None if a_agg.get("ROS") is None or b_agg.get("ROS") is None else float(b_agg.get("ROS")) - float(a_agg.get("ROS")),
-            "A_TCF": a_agg.get("TCF"),
-            "B_TCF": b_agg.get("TCF"),
-            "delta_TCF": None if a_agg.get("TCF") is None or b_agg.get("TCF") is None else float(b_agg.get("TCF")) - float(a_agg.get("TCF")),
-            "A_BES": a_agg.get("BES"),
-            "B_BES": b_agg.get("BES"),
-            "delta_BES": None if a_agg.get("BES") is None or b_agg.get("BES") is None else float(b_agg.get("BES")) - float(a_agg.get("BES")),
-        }
-    )
+    agg_row: dict[str, Any] = {"dataset": "__aggregate__"}
+    for key in metric_keys:
+        agg_row[f"A_{key}"] = a_agg.get(key)
+        agg_row[f"B_{key}"] = b_agg.get(key)
+        agg_row[f"delta_{key}"] = (
+            None if a_agg.get(key) is None or b_agg.get(key) is None else float(b_agg[key]) - float(a_agg[key])
+        )
+    rows.append(agg_row)
 
     out_path = exp_metrics_dir / "phase2_a_vs_b.csv"
+    fieldnames = ["dataset"]
+    for key in metric_keys:
+        fieldnames.extend([f"A_{key}", f"B_{key}", f"delta_{key}"])
     with out_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "dataset",
-                "A_JM",
-                "B_JM",
-                "delta_JM",
-                "A_JR",
-                "B_JR",
-                "delta_JR",
-                "A_ROS",
-                "B_ROS",
-                "delta_ROS",
-                "A_TCF",
-                "B_TCF",
-                "delta_TCF",
-                "A_BES",
-                "B_BES",
-                "delta_BES",
-            ],
-        )
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -2618,10 +2558,10 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
-    lines.append("| JM | JR | ROS | TCF | BES |")
-    lines.append("| ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| GT_Coverage | JM | JR | MaskScore | TCF | FAST_VQA |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: |")
     lines.append(
-        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} |"
+        f"| {aggregate.get(GT_COVERAGE_KEY)} | {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('MaskScore')} | {aggregate.get('TCF')} | {aggregate.get('FAST_VQA')} |"
     )
     lines.append("")
 
@@ -2649,12 +2589,12 @@ def write_acceptance_report(
 
     lines.append("## Per-Dataset Metrics")
     lines.append("")
-    lines.append("| Dataset | JM | JR | ROS | TCF | BES |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| Dataset | GT_Coverage | JM | JR | MaskScore | TCF | FAST_VQA |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     for ds_name, ds_payload in per_dataset.items():
         metrics = ds_payload.get("metrics", {}) if isinstance(ds_payload, dict) else {}
         lines.append(
-            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} |"
+            f"| {ds_name} | {metrics.get(GT_COVERAGE_KEY)} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('MaskScore')} | {metrics.get('TCF')} | {metrics.get('FAST_VQA')} |"
         )
     lines.append("")
 
@@ -2966,15 +2906,7 @@ def main() -> None:
     enforce_selection_coverage = bool(eval_selection_cfg.get("enforce_if_candidate_available", True))
     allow_missing_gt = bool(eval_cfg.get("allow_missing_gt", True))
     save_visualization = bool(eval_cfg.get("save_visualization", True))
-    quality_weights_cfg = eval_cfg.get("quality_weights", {}) or {}
-    quality_weights = {
-        "ros": float(quality_weights_cfg.get("ros", 0.5)),
-        "tcf": float(quality_weights_cfg.get("tcf", 0.3)),
-        "bes": float(quality_weights_cfg.get("bes", 0.2)),
-    }
-    ros_cfg = eval_cfg.get("ros", {}) or {}
     tcf_cfg = eval_cfg.get("tcf", {}) or {}
-    bes_cfg = eval_cfg.get("bes", {}) or {}
     if selection_coverage_constraints:
         logger.info(
             "Selection coverage constraints=%s enforce_if_candidate_available=%s",
@@ -3013,16 +2945,6 @@ def main() -> None:
         if str(x).strip()
     )
     seg_cfg = part1_cfg.get("segmentation", {}) or {}
-    detector = DynamicObjectDetector(
-        backend_priority=[str(x).strip().lower() for x in (ros_cfg.get("backend_priority", ["yolo", "maskrcnn"]) or []) if str(x).strip()],
-        dynamic_classes=dynamic_classes,
-        yolo_model=str(seg_cfg.get("yolo_model", "yolov8n-seg.pt")),
-        yolo_conf=float(seg_cfg.get("yolo_conf_threshold", 0.25)),
-        yolo_imgsz=int(seg_cfg.get("yolo_imgsz", 960)),
-        maskrcnn_conf=float(seg_cfg.get("maskrcnn_conf_threshold", 0.5)),
-        device=device,
-    )
-
     max_frames = int(args.max_frames) if args.max_frames is not None and int(args.max_frames) > 0 else None
 
     dataset_payloads: dict[str, DatasetPayload] = {}
@@ -3180,14 +3102,15 @@ def main() -> None:
             all_results.append(result)
 
             logger.info(
-                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f",
+                "[%s] candidate=%s -> GT_Coverage=%.4f JM=%.4f JR=%.4f MaskScore=%.4f TCF=%.4f FAST_VQA=%.4f",
                 stage,
                 spec.name,
+                metric_or_neg_inf(result.aggregate, GT_COVERAGE_KEY),
                 metric_or_neg_inf(result.aggregate, "JM"),
                 metric_or_neg_inf(result.aggregate, "JR"),
-                metric_or_neg_inf(result.aggregate, "ROS"),
+                mask_score(result.aggregate),
                 metric_or_neg_inf(result.aggregate, "TCF"),
-                metric_or_neg_inf(result.aggregate, "BES"),
+                metric_or_neg_inf(result.aggregate, "FAST_VQA"),
             )
 
         if not stage_results:
@@ -3375,12 +3298,7 @@ def main() -> None:
         gt_root=gt_root,
         datasets=final_datasets,
         out_dir=figures_dir / "failure_cases",
-        detector=detector,
-        quality_weights=quality_weights,
         tcf_dilate_kernel=int(tcf_cfg.get("dilate_kernel", 5)),
-        bes_dilate_kernel=int(bes_cfg.get("dilate_kernel", 5)),
-        bes_erode_kernel=int(bes_cfg.get("erode_kernel", 3)),
-        bes_sobel_ksize=int(bes_cfg.get("sobel_ksize", 3)),
         backend_meta=final_best.backend_meta,
         propainter_meta=final_best.propainter_meta,
         top_k=3,

@@ -19,11 +19,7 @@ evaluation:
   jr_iou_threshold: 0.5
   allow_missing_gt: true
   save_visualization: true
-  metric_schema_version: v2_remove_quality
-  quality_weights:
-    ros: 0.5
-    tcf: 0.3
-    bes: 0.2
+  metric_schema_version: v4_maskscore_color_tcf_fastvqa
   selection:
     exclude_datasets: []
     min_mean_mask_ratio_by_dataset:
@@ -31,15 +27,28 @@ evaluation:
     min_active_frame_ratio_by_dataset:
       wild: 0.25
     enforce_if_candidate_available: true
-  ros:
-    backend_priority: [yolo, maskrcnn]
-    device: cpu
   tcf:
     dilate_kernel: 5
-  bes:
-    dilate_kernel: 5
-    erode_kernel: 3
-    sobel_ksize: 3
+    color_space: bgr
+  fast_vqa:
+    enabled: true
+    env_name: ""
+    command:
+      - python
+      - scripts/fast_vqa_score.py
+      - --repo-path
+      - outputs/external/quality/FAST-VQA-and-FasterVQA
+      - --model
+      - FAST-VQA-M
+      - --device
+      - cpu
+      - --video
+      - "{video}"
+      - --output-json
+      - "{output_json}"
+    timeout_sec: 900
+    higher_is_better: true
+    force_recompute: false
 
 output_policy:
   video_only: true

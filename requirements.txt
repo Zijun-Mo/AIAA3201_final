@@ -4,3 +4,6 @@ tqdm==4.66.5
 PyYAML==6.0.2
 scikit-image==0.24.0
 matplotlib==3.9.2
+decord==0.6.0
+scikit-video==1.1.11
+clip @ git+https://github.com/openai/CLIP.git

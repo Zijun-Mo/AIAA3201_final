@@ -9,15 +9,15 @@
 
 ### 0.1 交付优先级（必须遵守）
 1. **必须先保证能交作业**：A + B 路线、3 个 mandatory 数据集结果、核心指标与可视化。
-2. **再做加分探索**：E/F/G 按收益和风险逐步推进。
+2. **再做加分探索**：E/F/Phase 6 按 `MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR` 的收益逐步推进；G 仅保留定性失败分析。
 3. **每个阶段必须可复现**：配置、指标、可视化、日志四件套必须齐全。
 
 ### 0.2 成功标准（Definition of Done）
 - 代码可复现跑通（含 README 指令）。
 - mandatory 数据集（Wild / bmx-trees / tennis）都有输出视频。
-- 指标完整：JM、JR、ROS、TCF、BES。
+- 指标完整：`GT_Coverage`、JM、JR、彩色 TCF、FAST-VQA。
 - 有可用于论文的表格和图（含 failure cases）。
-- 有一条明确的结论链：`A-best -> B-best -> (B+E / B+F / G)`。
+- 有一条明确的结论链：`A-best -> B-best -> (B+E / B+F / Phase6-best)`；G 作为 diffusion 定性失败案例。
 
 ---
 
@@ -31,7 +31,7 @@
 ### 任务
 - 数据集整理：Wild、bmx-trees、tennis、可选 DAVIS。
 - 统一预处理：分辨率、fps、帧命名、mask 格式。  
-- 统一评价协议：JM/JR + ROS/TCF/BES、可视化样式。
+- 统一评价协议：`MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR` + 彩色 TCF + FAST-VQA、可视化样式。
 - 建立实验记录模板。
 
 ### 输出
@@ -76,10 +76,11 @@
 - A-best 指标与可视化可复现。
 
 ### 验收结果
-- **状态**：PASS（2026-04-30）
-- Exp ID：`phase1_20260430_*`（`check_phase1`: PASS）
-- 3 个 mandatory 数据集均跑通 A-best（YOLO+光流筛选+cv2.inpaint）。
-- A-best 指标可复现，输出视频与可视化齐全。
+- **状态**：PASS（最新复跑：2026-05-10）
+- Exp ID：`phase1_maskscore_fastvqa_20260510_023457_pl220`（`check_phase1`: PASS）
+- A-best：`A5 / temporal_2`，即 Mask R-CNN + 光流筛选（threshold=0.8）+ dilation=3 + Telea + temporal borrowing（window=2）。
+- Aggregate（A-best）：`GT_Coverage=0.9222`，`JM=0.6059`，`JR=0.7188`，`MaskScore=0.7923`，`TCF(color)=0.0608`，`FAST_VQA=0.0835`。
+- 3 个 mandatory 数据集均跑通 A-best，输出视频与 mask 视频齐全；`wild` 无 GT，不参与 mask 聚合。
 
 ---
 
@@ -106,11 +107,12 @@
 - 3 个 mandatory 数据集完整视频输出齐全。
 
 ### 验收结果
-- **状态**：PASS（2026-04-30）
-- Exp ID：`phase2_20260430_175248`（`check_phase2 --strict-dual-run false`: PASS）
-- B-best backend：`sam2`，传播策略：`bidirectional_no_wrap`
-- Aggregate：`JM=0.6647`，`JR=0.7688`，`TCF=0.0600`
-- 3 个 mandatory 数据集完整视频输出齐全，B-best 在视觉质量和关键指标上优于 A-best。
+- **状态**：PASS（最新复跑：2026-05-10）
+- Exp ID：`phase2_maskscore_fastvqa_20260510_023457_pl220`（`check_phase2 --strict-dual-run false`: PASS）
+- B-best：`B5 / b_best_finalize`，backend=`trackanything`，mask variant=`coarse`。
+- Aggregate（B-best）：`GT_Coverage=0.9208`，`JM=0.6387`，`JR=0.7562`，`MaskScore=0.8091`，`TCF(color)=0.0640`，`FAST_VQA=0.1060`。
+- A→B delta：`delta_GT_Coverage=-0.0015`，`delta_JM=+0.0328`，`delta_JR=+0.0375`，`delta_MaskScore=+0.0168`，`delta_TCF=+0.0031`，`delta_FAST_VQA=+0.0225`。
+- 3 个 mandatory 数据集完整视频输出齐全；B-best 在新 `MaskScore` 上优于 A-best。
 
 ### 风险与回退
 - 风险：SOTA 环境复杂，短期无法稳定。
@@ -128,7 +130,7 @@
 | E1 | mask 后处理 | opening/closing/dilation/smoothing | 0.25-0.5 天 | 降低边界毛刺 |
 | E2 | temporal smoothing | 融合窗口大小 | 0.5 天 | 减少 flicker |
 | E3 | 更强 refiner | SAM3/其他 | 0.5-1 天 | 提升边界精度 |
-| E4 | 增益验证 | JM/JR/TCF | 0.25 天 | 给出量化提升 |
+| E4 | 增益验证 | GT_Coverage/JM/JR/彩色 TCF | 0.25 天 | 给出量化提升 |
 
 ### 输出
 - `B vs B+E` 对比图与增益表。
@@ -138,28 +140,28 @@
 - 至少一个 mandatory 数据集上出现可解释的提升。
 
 ### 验收结果
-- **状态**：PASS（2026-05-01）
-- Exp ID：`phase3_sam3_multianchor_20260501_012933`（`check_phase3 --strict-sam3-permission true`: PASS）
-- E3 SAM3 multi-anchor refiner 与 SAM2 提示词策略完全统一（multi-anchor、gap-spaced、bidirectional_no_wrap）。
-- Aggregate（B+E+SAM3）：`JM=0.6782`，`JR=0.7812`，`TCF=0.0609`
-- B→E+SAM3 delta：`delta_JM=+0.0135`，`delta_JR=+0.0124`，`delta_TCF=+0.0009`
-- bmx-trees 和 tennis 上 JM/JR 均有可解释提升；wild 无 GT mask 故 JM/JR 为 None。
+- **状态**：PASS（最新复跑：2026-05-10）
+- Exp ID：`phase3_maskscore_fastvqa_20260510_023457_pl220`（`check_phase3 --strict-sam3-permission true`: PASS）
+- E-best：`E4 / b_plus_e_finalize`，SAM3 multi-anchor refiner 与 B-best 提示词策略统一。
+- Aggregate（B+E）：`GT_Coverage=0.9531`，`JM=0.6328`，`JR=0.7625`，`MaskScore=0.8254`，`TCF(color)=0.0647`，`FAST_VQA=0.1258`。
+- B→E delta：`delta_GT_Coverage=+0.0323`，`delta_JM=-0.0058`，`delta_JR=+0.0063`，`delta_MaskScore=+0.0163`，`delta_TCF=+0.0007`，`delta_FAST_VQA=+0.0198`。
+- bmx-trees 上覆盖提升明显；tennis 维持较高 `MaskScore`；`wild` 无 GT mask 故不参与 mask 聚合。
 
 ---
 
-## Phase 4：路线 F（研究探索：VGGT4D prior 对照，2-3 天）
+## Phase 4：路线 F（研究探索：VGGT4D prior + backend 对照，2-3 天）
 
-**状态（2026-04-30）：已完成开发与全量验收。**
-- 全量实验：`phase4_bidir_full_20260430_162056`
-- Gate：`scripts/check_phase4.sh` 通过
-- 最终导出：`F1 / bbest_vggt4d_replace_yolo`（`phase4_final_policy=force_vggt4d_prior`）
-- 关联 Phase2：`phase2_bidir_full_20260430_150340`（全局 B-best backend=`sam2`）
+**状态（2026-05-10）：按 MaskScore 协议与 alternate backend 口径完成复跑验收。**
+- 最新实验：`phase4_maskscore_fastvqa_altbackend_20260510_pl220`（`check_phase4`: PASS）
+- 修正规则：Phase4 final 从 F-stage 全部成功候选中按 `MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR` 选择；F3 固定测试 `VGGT4D prior + B-best 未选择的后端`。
+- 关联 Phase2：`phase2_maskscore_fastvqa_20260510_023457_pl220`
 
 `VGGT4D raw mask -> B-best mask backend + bidirectional no-wrap propagation = VGGT4D prior -> ProPainter`
 
 ### 口径约束
-- YOLO-only、VGGT4D raw、VGGT4D+YOLO 与相关先验融合都只是探索/消融实验，只需要诚实产生对比结果，不作为路线 F 的最终产物。
-- 路线 F 最终导出的视频、指标与报告主结果必须来自 `VGGT4D prior`。
+- Phase4 不再做 YOLO-only / VGGT4D+YOLO / mask prior fusion 对照。
+- F3 专门测试 `VGGT4D prior + Phase2 B-best 未选择的后端`。若 B-best 是 Track Anything，则 F3 用 SAM2；若 B-best 是 SAM2，则 F3 用 Track Anything。
+- 路线 F 最终导出的视频、指标与报告主结果必须按全局 `MaskScore` 选择，不再强制来自 `VGGT4D prior`。
 - `VGGT4D prior` 不是直接使用 VGGT4D 原始 mask；它指 VGGT4D 输出先转为 prompt anchors，再经过 B-best 实际使用的全局 mask backend 与 `bidirectional_no_wrap` 传播策略后的结果。
 - 首尾不连续视频按普通非循环视频处理；SAM2/Track Anything 禁止把尾帧记忆直接接到首帧。
 
@@ -168,28 +170,29 @@
 | --- | --- | --- | ---: | --- |
 | F1 | VGGT4D prior 主结果 | chunk_size / frame chunk strategy / B-best mask backend | 0.5 天 | 生成路线 F 最终视频与指标 |
 | F2 | B-best 基线复现实验 | B-best 固定配置 | 0.25 天 | 作为 F 路线对照基线 |
-| F3 | mask prior 对照 | YOLO-only / VGGT4D raw / VGGT4D prior / VGGT4D+YOLO | 0.5 天 | 诚实比较先验质量与失败模式 |
-| F4 | 先验融合探索 | vggt4d_guided / weighted / intersection / union / motion filtering | 0.5-1 天 | 仅作为消融，分析是否带来增益或副作用 |
+| F3 | alternate backend 对照 | VGGT4D prior + 非 B-best 后端 | 0.5 天 | 判断 VGGT4D prior 对 backend 的敏感性 |
+| F4 | flow/trajectory refinement | bidirectional consistency / weighted motion filtering | 0.5-1 天 | 仅作为消融，分析是否带来增益或副作用 |
 | F5 | 难例对比 | 遮挡/多目标/静态人车 | 0.25 天 | 解释 VGGT4D prior 的适用边界 |
 
 ### 输出
-- `F-final = B+F(VGGT4D prior)` 的视频、指标与报告主结果。
-- `YOLO-only vs VGGT4D raw vs VGGT4D prior vs VGGT4D+YOLO/fusion` 对比结果（mask 级/消融级）。
-- `B-best vs F-final(VGGT4D prior)` 对比结果（视频级）。
+- `F-final` 的视频、指标与报告主结果，选择标准为全局 `MaskScore`。
+- `VGGT4D raw vs VGGT4D prior+B-best backend vs VGGT4D prior+alternate backend` 对比结果。
+- `B-best vs F-final` 对比结果（视频级）。
 - 难场景 case study（重点讲“该不该删”的判断改进）。
 
 ### 验收门槛
 - 3 个 mandatory 数据集均有 `VGGT4D prior` 版本视频与指标。
-- YOLO、VGGT4D raw、融合结果只进入消融表和失败分析；若没有优于 B-best，也按真实结果报告，不替换 F-final。
+- `phase4_ablation.csv` 中 `is_final_best=1` 的候选必须达到全表最高 `MaskScore`。
 - 若 `VGGT4D prior` 生成失败，路线 F 标记为失败并记录原因，禁止改用 YOLO 或融合结果冒充路线 F 最终产物。
 
 ### 验收结果
-- **状态**：PASS（2026-04-30）
-- Exp ID：`phase4_20260430_183904`（`check_phase4`: PASS）
-- F-best：`F1 / VGGT4D prior`，关联 Phase2：`phase2_20260430_175248`（B-best backend=`sam2`）
-- Aggregate（VGGT4D prior）：`JM=0.7074`，`JR=0.7688`，`TCF=0.0639`
-- B→F delta：`delta_JM=+0.0427`，`delta_JR=0.0`，`delta_TCF=+0.0039`
-- 3 个 mandatory 数据集均有 VGGT4D prior 版本视频与指标；JM 显著提升，TCF 轻微上升属正常范围。
+- **状态**：PASS（最新复跑：2026-05-10）
+- Exp ID：`phase4_maskscore_fastvqa_altbackend_20260510_pl220`（`check_phase4`: PASS）
+- F-best：`F3 / vggt4d_prior_sam2`。Phase2 B-best 使用 Track Anything，因此 alternate backend 实验使用 SAM2。
+- Aggregate（F-best）：`GT_Coverage=0.9722`，`JM=0.7074`，`JR=0.7688`，`MaskScore=0.8552`，`TCF(color)=0.0698`，`FAST_VQA=0.1201`。
+- B→F delta：`delta_GT_Coverage=+0.0515`，`delta_JM=+0.0687`，`delta_JR=+0.0125`，`delta_MaskScore=+0.0460`，`delta_TCF=+0.0058`，`delta_FAST_VQA=+0.0140`。
+- Backend prior audit：`phase4_backend_priors.csv` 记录 VGGT4D raw、VGGT4D prior + Track Anything（B-best backend）、VGGT4D prior + SAM2（alternate backend）的 mask ratio。
+- 结论：删去 mask-prior 对照后，`VGGT4D prior + SAM2` 显著优于 B-best 的综合 mask 分数；主要收益来自更高 GT 覆盖和 JM，但彩色 TCF 较 B-best 略差，说明仍有时序稳定性代价。
 
 ---
 
@@ -230,25 +233,83 @@
 - 默认不做逐视频纹理描述；若通用提示词明显失败，只允许加入一个粗粒度场景词（如 `forest trail` / `tennis court`），并在日志中记录。
 
 ### 输出
-- `same-mask ProPainter vs G-low/G-mid/G-high` 指标与可视化对比。
-- `framewise diffusion vs keyframe diffusion vs hybrid refinement` 时序对比。
+- `same-mask ProPainter vs G-low/G-mid/G-high` 定性可视化对比，不作为定量主结果。
+- `framewise diffusion vs keyframe diffusion vs hybrid refinement` 连续帧定性对比，重点观察闪烁、边界接缝与风格漂移。
 - “背景从未出现”专题案例与连续帧 strip。
 - G 路线失败案例包（闪烁、风格漂移、结构幻觉、边界接缝）。
 
 ### 验收门槛
-- 至少在一个”不可借像素”场景上相对 ProPainter 有明显视觉收益。
-- 同时必须报告 TCF/BES 或连续帧可视化中的时序代价；若 TCF 上升但纹理真实性提升，也按真实 trade-off 写入报告。
+- Phase 5 仅作为定性探索与失败分析，不纳入定量主表，也不作为最终视频修复主方法。
+- 必须保留连续帧可视化，明确报告 diffusion 对闪烁、边界接缝、风格漂移和结构幻觉的影响。
 
 ### 验收结果
-- **状态**：PASS（2026-05-01）
-- Exp ID：`phase5_20260501_153130`（`check_phase5`: PASS）
-- G-best variant：`G-high`（mask_dilation=20, denoise_strength=0.75, keyframe_interval=1）
+- **状态**：PASS；完成定性探索，结论为失败/不作为主方法（最新复跑：2026-05-10）
+- Exp ID：`phase5_maskscore_fastvqa_20260510_023457_pl220`（`check_phase5`: PASS）
+- 选择设置：`G-hybrid`（ProPainter base + diffusion local redraw），按 `MaskScore` 与其他 G variants 并列最高。
+- Aggregate（G-hybrid）：`GT_Coverage=0.9208`，`JM=0.6387`，`JR=0.7562`，`MaskScore=0.8091`，`TCF(color)=0.0490`，`FAST_VQA=0.0991`。
 - Model：`stable-diffusion-v1-5/stable-diffusion-inpainting`，device=cuda（RTX 4080 SUPER）
-- Aggregate（G-high）：`JM=0.6782`，`JR=0.7813`，`TCF=0.0722`
-- B→G delta：`delta_JM=+0.0135`，`delta_JR=+0.0125`，`delta_TCF=+0.0122`
-- 消融结果：G-low TCF=0.0610，G-mid=0.0526，G-high=0.0722，G-hybrid=0.0511
-- 修复 bug（diffusion 输入改为 ProPainter 补全帧而非原始帧）后，TCF 相对 B-best 轻微上升（+0.0122）；G-high 在大 mask dilation 下纹理生成质量最优。
-- 3 个 mandatory 数据集均有完整视频输出与指标。
+- 验收结论：Phase 5 会严重加剧时序闪烁和边界问题；局部纹理虽可能更“生成式”，但连续帧稳定性、接缝一致性和结构可信度不足。
+- 因上述问题，G 路线只进入定性失败案例与“背景未出现”讨论，不进入主方法定量排名，也不选择任何 G-best。
+- 3 个 mandatory 数据集均有可用于定性检查的视频输出。
+
+---
+
+## Phase 6：E/F 核心修改点叠加验证（目标确认是否超过 E-best 与 F-best，0.5 天）
+
+`B-best / E-best / F-best references -> F-best prior + SAM3 refinement -> ProPainter`
+
+### 已确认起点
+- B-best：`phase2_maskscore_fastvqa_20260510_023457_pl220`，`GT_Coverage=0.9208`，`JM=0.6387`，`JR=0.7562`，`MaskScore=0.8091`。
+- E-best：`phase3_maskscore_fastvqa_20260510_023457_pl220 / E4 b_plus_e_finalize`，`GT_Coverage=0.9531`，`JM=0.6328`，`JR=0.7625`，`MaskScore=0.8254`。
+- F-best：`phase4_maskscore_fastvqa_altbackend_20260510_pl220 / F3 vggt4d_prior_sam2`，`GT_Coverage=0.9722`，`JM=0.7074`，`JR=0.7688`，`MaskScore=0.8552`。
+
+### 目标
+- Phase 6 不是广泛对比实验；它只确认 E-best 的 SAM3 refine 核心修改点与 F-best 的 VGGT4D prior + SAM2 核心修改点叠加后，是否能同时高于 E-best 与 F-best。
+- Phase6-best 和各阶段 mask-best 的选择标准为 `MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR`。
+- 彩色 TCF 和 FAST-VQA 作为视频质量副指标报告；不使用 ROS/BES。
+- Phase 6 不再包含 dataset selector、oracle upper bound、guided fusion 或 union-safe 等横向搜索项；这些旧实验只作为历史参考，不进入最终文档口径。
+
+### 子实验
+| 编号 | 内容 | 变量 | 预计耗时 | 目标 |
+| --- | --- | --- | ---: | --- |
+| H0 | 起点复核 | `b_best_ref` / `e_best_ref` / `f_best_ref` | 0.1 天 | 在同一 Phase 6 管线中复现 B-best、E-best、F-best |
+| H1 | 核心叠加 | `f_best_then_sam3` | 0.25 天 | 验证 `VGGT4D prior + SAM2 -> SAM3` 是否同时超过 E-best 与 F-best |
+
+### 推荐候选顺序
+1. `H0_b_best_ref`：复现 Phase2 B-best。
+2. `H0_e_best_ref`：复现 Phase3 E-best（`morph_light + SAM3 refine`）。
+3. `H0_f_best_ref`：复现 Phase4 F-best（`VGGT4D prior + SAM2`）。
+4. `H1_f_best_then_sam3`：唯一新实验，直接测试 F-best 是否能被 SAM3 继续提升。
+
+### 验收门槛
+- 最低门槛：Phase6-best 必须达到 B-best 的综合 mask 水平，即 `MaskScore >= 0.8091`，且 `JM/JR` 不出现不可解释的大幅退化。
+- 强门槛：Phase6-best 的 `MaskScore` 高于 E-best 与 F-best（报告口径），即超过 `max(0.8254, 0.8552)=0.8552`。
+- 理想门槛：`H1_f_best_then_sam3` 同时达到或超过 F-best 的 `GT_Coverage=0.9722`、`JM=0.7074`、`JR=0.7688`，并且超过 E-best 的 `JR=0.7625`。
+
+### 输出
+- `Phase6-best` 视频、mask 视频、`summary.json`、`per_dataset.csv`、`phase6_ablation.csv`、`phase6_selection.json`。
+- `B/E/F/Phase6` 的 `GT_Coverage/JM/JR/TCF/FAST_VQA` 主表与 per-dataset 对比表。
+- `B vs E vs F vs Phase6` 边界专题图，重点展示 bmx-trees 和 tennis 的提升/退化区域。
+- 若 Phase 6 未同时超过 E-best 与 F-best，保留失败原因：过度扩张、漏检、VGGT4D prior 与 SAM3 边界冲突、per-frame 不稳定。
+
+- **状态**：PASS（2026-05-12；`check_phase6 --strict-sam3-permission true`: PASS）
+- 旧 Exp ID：`phase6_20260509_123005_pl220` 是灰度 TCF + ROS/BES + JM/JR-only 排序口径，仅保留历史参考，不再作为最终结论。
+- 历史 Exp ID：`phase6_maskscore_fastvqa_20260511_172500_pl220`、`phase6_v2_maskscore_fastvqa_20260511_183000_pl220` 仅保留历史参考，不再作为最终 Phase6 结论。
+- Exp ID：`phase6_core_maskscore_fastvqa_20260511_235610_pl220`。
+- Phase6-best：`H1 / f_best_then_sam3`，即 `VGGT4D prior + SAM2 -> SAM3 refine`，再用 ProPainter 修复。
+- 全局非 oracle 选择集：有 GT 的 mandatory 数据集；`wild` 因 GT mask 缺失被自动排除出 `GT_Coverage/JM/JR/MaskScore` 选择，但仍生成最终视频和 mask 视频。
+- Aggregate（Phase6-best）：`GT_Coverage=0.9741`，`JM=0.7075`，`JR=0.7688`，`MaskScore=0.8561`，`TCF(color)=0.0697`，`FAST_VQA=0.1234`。
+- B→Phase6 delta：`delta_GT_Coverage=+0.0534`，`delta_JM=+0.0688`，`delta_JR=+0.0125`，`delta_MaskScore=+0.0470`，`delta_TCF=+0.0058`，`delta_FAST_VQA=+0.0173`。
+- F→Phase6 delta：`delta_GT_Coverage=+0.0019`，`delta_JM=+0.0001`，`delta_JR=+0.0000`，`delta_MaskScore=+0.0010`，`delta_TCF=-0.0000`，`delta_FAST_VQA=+0.0033`（相对 Phase4 final summary）。
+- 结论：H1 叠加后 `MaskScore=0.8561`，略高于 E-best `0.8254` 和 F-best `0.8552`；收益很小，主要来自 `GT_Coverage` 的轻微上升。
+
+### Phase 6 候选结果
+| Candidate | GT_Coverage↑ | JM↑ | JR↑ | MaskScore↑ | TCF(color)↓ | FAST_VQA↑ | 结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `H0/b_best_ref` | 0.9196 | 0.6378 | 0.7500 | 0.8067 | 0.0649 | 0.1190 | B-best 在 Phase 6 管线中的复核 |
+| `H0/e_best_ref` | 0.9531 | 0.6328 | 0.7625 | 0.8254 | 0.0647 | 0.1195 | 复现 E-best 核心路径 |
+| `H0/f_best_ref` | 0.9722 | 0.7074 | 0.7688 | 0.8552 | 0.0698 | 0.1244 | 复现 F-best 核心路径 |
+| `H1/f_best_then_sam3` | 0.9741 | 0.7075 | 0.7688 | 0.8561 | 0.0697 | 0.1234 | 最终 Phase6-best；小幅超过 E-best 与 F-best |
 
 ---
 
@@ -262,7 +323,9 @@
 
 ## 2.2 加分建议（时间充足）
 - E 路线完整增益验证。
-- F 或 G 至少完成一条并形成清晰研究结论。
+- F 路线完整增益验证。
+- Phase 6 作为 E/F 核心修改点叠加验证优先推进。
+- G 路线只保留定性失败分析，不进入定量主线。
 - 在 DAVIS 上补充泛化实验。
 
 ---
@@ -276,42 +339,58 @@
 | Day 4-6 | Phase 2（B 路线全部 + B-best + mandatory 完整结果） |
 | Day 7-8 | Phase 3（E 路线） |
 | Day 9-10 | Phase 4（F 路线） |
-| Day 11-12 | Phase 5（G 路线） |
+| Day 11 | Phase 6（E/F 核心修改点叠加验证） |
+| Day 12 | Phase 5（G 路线定性失败分析） |
 | Day 13 | 指标汇总、可视化整理、failure cases 归档 |
 | Day 14 | 写实验与分析章节，补齐图表与结论链 |
 
-> 若时间不足：优先保证 Day 1-6 + Day 13-14 完整，E/F/G 只保留 1 条最有把握路线。
+> 若时间不足：优先保证 Day 1-6 + Day 13-14 完整；E/F/Phase 6 中保留 `GT_Coverage` 优先规则下最强路线，G 只保留失败案例。
 
 ---
 
 ## 4. 结果表与图（建议最终最少产出）
 
-## 表 1：总体性能主表（必须）
-| Method | Mask Source | Inpainting | JM↑ | JR↑ | TCF↓ |
-| --- | --- | --- | ---: | ---: | ---: |
-| A-best | YOLO+Flow | OpenCV |  |  |  |
-| B-best | SAM2/TA | ProPainter |  |  |  |
-| B+E | refined mask | ProPainter |  |  |  |
-| B+F | VGGT4D prior | ProPainter |  |  |  |
-| G | refined mask | Diffusion |  |  |  |
+### 状态
+- **状态**：DONE（2026-05-12，已用最新 Phase1-6 accepted runs 重新生成）
+- 生成入口：`bash scripts/build_results_artifacts.sh`
+- 表格目录：`outputs/metrics/final_results/`
+- 图像目录：`outputs/figures/final_results/`
+- Manifest：`outputs/metrics/final_results/final_results_manifest.json`
 
-## 表 2：A 路线消融（建议）
-| Setting | Dynamic Filter | Dilation | Inpaint Algo | ROS | TCF | BES |
-| --- | --- | --- | --- | ---: | ---: | ---: |
+### 已生成表格
+- 表 1 总体性能主表：`table1_main_performance.{csv,md,tex}`
+- 表 2 A 路线消融：`table2_a_ablation.{csv,md,tex}`
+- 表 3 B/E/F/Phase6 消融：`table3_bef_phase6_ablation.{csv,md,tex}`
+- 表 4 Phase 5/G 定性失败分析：`table4_phase5_qualitative.{csv,md,tex}`
+- 汇总说明：`final_results_summary.md`
 
-## 表 3：B/E/F 消融（建议）
-| Setting | Temporal Smoothing | Motion Prior | Refinement | JM | JR | TCF |
-| --- | --- | --- | --- | ---: | ---: | ---: |
+### 表 1 当前核心数值
+| Method | GT_Coverage↑ | JM↑ | JR↑ | MaskScore↑ | TCF(color)↓ | FAST_VQA↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A-best | 0.9222 | 0.6059 | 0.7188 | 0.7923 | 0.0608 | 0.0835 |
+| B-best | 0.9208 | 0.6387 | 0.7562 | 0.8091 | 0.0640 | 0.1060 |
+| B+E | 0.9531 | 0.6328 | 0.7625 | 0.8254 | 0.0647 | 0.1258 |
+| B+F | 0.9722 | 0.7074 | 0.7688 | 0.8552 | 0.0698 | 0.1201 |
+| Phase6-best | 0.9741 | 0.7075 | 0.7688 | 0.8561 | 0.0697 | 0.1234 |
 
-## 表 4：成本分析（建议）
-| Method | Time/frame | GPU Mem | Resolution |
-| --- | ---: | ---: | --- |
+> Phase 5 / G 路线只做定性失败分析，不进入总体性能主表的定量排名。
 
-## 图（至少 4 组）
-- A-best vs B-best 全局对比图。
-- B vs B+E 边界细节图。
-- B vs B+F(VGGT4D prior) 难场景图（遮挡/多目标）。
-- B vs G “背景未出现”专题图。
+### 指标解释：TCF 与 FAST-VQA
+- 当前 TCF 是彩色帧时序一致性指标，数值越低只说明预测 mask ROI 内的帧间差异越小；它不能单独代表补全真实度或视觉质量。
+- A 路线和 G 路线的 TCF 较低并不等价于修复更好。主要原因是模糊、低频、错误但稳定的补全会天然降低帧间差异；相反，更真实的纹理、边缘和结构细节会让 optical-flow 对齐误差更明显，从而可能抬高 TCF。
+- 因此 TCF 只作为“时序平滑程度”的辅助指标，不作为 best 选择依据，也不能用来否定 `MaskScore` 和视觉对比中的提升。
+- FAST-VQA 的排序更接近人工观感：A-best `0.0835` 与 G-hybrid `0.0991` 较低，B+E `0.1258`、Phase6-best `0.1234` 较高；这与定性观察中 A 的模糊补全、G 的闪烁/边界问题、E/Phase6 的生成质量更可靠基本一致。
+- 最终论文口径应使用 `MaskScore` 评价 mask 质量，用 FAST-VQA 与可视化互相印证生成质量；TCF 只报告其局限性与时序一致性 trade-off。
+
+### 已生成图
+- `figure1_overall_metrics.png`：总体指标柱状图。
+- `figure2_a_vs_b_global.png`：A-best vs B-best 全局对比图。
+- `figure3_b_e_f_phase6_visual.png`：B/E/F/Phase6 主视觉对比图。
+- `figure4_b_e_f_phase6_boundary.png`：B vs E vs F vs Phase6 边界细节图。
+- `figure5_b_f_phase6_hard_scene.png`：B vs F(VGGT4D prior) vs Phase6 难场景图。
+- `figure6_jmjr_main_methods.png`：主方法 JM/JR 散点图。
+- `figure7_phase6_pareto.png`：Phase 6 H0/H1 核心候选分布图（文件名沿用 pareto，但不代表广泛搜索）。
+- `figure8_phase5_failure_strip.png`：B vs G 连续帧定性失败 strip。
 
 ---
 

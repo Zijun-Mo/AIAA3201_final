@@ -76,9 +76,12 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             with summary_path.open("r", encoding="utf-8") as f:
                 summary = json.load(f)
             agg = summary.get("aggregate", {}) or {}
-            for key in ["JM", "JR", "ROS", "TCF", "BES"]:
+            for key in ["GT_Coverage", "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]:
                 if key not in agg:
                     issues.append(f"summary.json missing aggregate metric: {key}")
+            for key in ["ROS", "BES"]:
+                if key in agg:
+                    issues.append(f"summary.json contains removed metric: {key}")
         except Exception as e:
             issues.append(f"invalid summary.json: {e}")
 

@@ -117,10 +117,10 @@ def check_metrics(metrics_dir: Path) -> list[str]:
             if not isinstance(summary.get("datasets", {}), dict):
                 issues.append(f"invalid summary datasets field: {summary_path}")
             agg = summary.get("aggregate", {}) or {}
-            for key in ["ROS", "TCF", "BES"]:
+            for key in ["GT_Coverage", "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]:
                 if key not in agg:
                     issues.append(f"missing aggregate metric '{key}' in {summary_path}")
-            for key in ["PSNR", "SSIM"]:
+            for key in ["PSNR", "SSIM", "ROS", "BES"]:
                 if key in agg:
                     issues.append(f"forbidden legacy metric '{key}' in {summary_path}")
         except Exception as e:
@@ -131,10 +131,10 @@ def check_metrics(metrics_dir: Path) -> list[str]:
         try:
             with per_dataset_csv.open("r", encoding="utf-8") as f:
                 headers = set(csv.DictReader(f).fieldnames or [])
-            for key in ["ROS", "TCF", "BES"]:
+            for key in ["GT_Coverage", "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]:
                 if key not in headers:
                     issues.append(f"missing column '{key}' in {per_dataset_csv}")
-            for key in ["PSNR", "SSIM"]:
+            for key in ["PSNR", "SSIM", "ROS", "BES"]:
                 if key in headers:
                     issues.append(f"forbidden legacy column '{key}' in {per_dataset_csv}")
         except Exception as e:
@@ -145,10 +145,10 @@ def check_metrics(metrics_dir: Path) -> list[str]:
         try:
             with compare_csv.open("r", encoding="utf-8") as f:
                 headers = set(csv.DictReader(f).fieldnames or [])
-            for key in ["delta_TCF", "delta_JM", "delta_JR"]:
+            for key in ["delta_GT_Coverage", "delta_JM", "delta_JR", "delta_MaskScore", "delta_TCF", "delta_FAST_VQA"]:
                 if key not in headers:
                     issues.append(f"missing comparison column '{key}' in {compare_csv}")
-            for key in ["delta_PSNR", "delta_SSIM", "A_PSNR", "B_PSNR", "A_SSIM", "B_SSIM"]:
+            for key in ["delta_PSNR", "delta_SSIM", "A_PSNR", "B_PSNR", "A_SSIM", "B_SSIM", "A_ROS", "B_ROS", "A_BES", "B_BES"]:
                 if key in headers:
                     issues.append(f"forbidden legacy comparison column '{key}' in {compare_csv}")
         except Exception as e:

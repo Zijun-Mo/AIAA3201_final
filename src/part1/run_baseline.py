@@ -23,7 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.common.remove_quality import DynamicObjectDetector, compute_remove_quality
+from src.common.remove_quality import compute_remove_quality
+from src.common.mask_ranking import GT_COVERAGE_KEY, mask_score, mask_tiebreak_key, select_maskscore_best
 from src.common.video_io import (
     cleanup_video_only_outputs,
     encode_dataset_h264_videos,
@@ -663,19 +664,13 @@ def build_wild_fallback_masks(
 
 def classify_failure_case(
     dataset: str,
-    ros: float,
     tcf: float,
-    bes: float,
     wild_fallback_applied: bool,
 ) -> str:
     if dataset == "wild" and wild_fallback_applied:
         return "residual_object_fallback_recovery"
-    if ros > 0.05:
-        return "residual_object"
     if tcf > 0.12:
         return "temporal_flicker"
-    if bes > 0.15:
-        return "boundary_artifact"
     return "minor_artifact"
 
 
@@ -826,18 +821,8 @@ def metric_or_neg_inf(agg: dict[str, Any], key: str) -> float:
     return float(value)
 
 
-def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, float, float, float]:
-    jm = metric_or_neg_inf(agg, "JM")
-    jr = metric_or_neg_inf(agg, "JR")
-    tcf_value = agg.get("TCF", None)
-    tcf = float(tcf_value) if tcf_value is not None else float("inf")
-    if not np.isfinite(tcf):
-        tcf = float("inf")
-
-    # A1-A3 prioritize mask quality first; A4-A5 prioritize reconstruction quality.
-    if stage in {"A1", "A2", "A3"}:
-        return (jm, jr, -tcf, -abs(mean_mask_ratio - 0.1))
-    return (-tcf, jm, jr, -abs(mean_mask_ratio - 0.1))
+def stage_score(stage: str, agg: dict[str, Any], mean_mask_ratio: float) -> tuple[float, ...]:
+    return mask_tiebreak_key(agg, mean_mask_ratio=mean_mask_ratio)
 
 
 def parse_selection_coverage_constraints(selection_cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -912,12 +897,18 @@ def select_best(
         else:
             raise ValueError(f"No candidate meets coverage constraints in stage {stage}: {constraints}")
 
-    def score(entry: CandidateResult) -> tuple[float, float, float, float]:
+    def mean_ratio_for(entry: CandidateResult) -> float:
         ratios = [v.get("mean_mask_ratio", 0.0) for v in entry.mask_stats.values()]
-        mean_ratio = float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
-        return stage_score(stage, entry.aggregate, mean_ratio)
+        return float(np.mean(np.array(ratios, dtype=np.float32))) if ratios else 0.0
 
-    return max(pool, key=score)
+    def score(entry: CandidateResult) -> tuple[float, ...]:
+        return stage_score(stage, entry.aggregate, mean_ratio_for(entry))
+
+    return select_maskscore_best(
+        pool,
+        lambda entry: entry.aggregate,
+        tiebreak_fn=lambda entry: mask_tiebreak_key(entry.aggregate, mean_mask_ratio=mean_ratio_for(entry)),
+    )
 
 
 def copy_a_best(best_candidate_root: Path, final_root: Path, datasets: list[str]) -> None:
@@ -936,12 +927,7 @@ def build_failure_case_index(
     gt_root: Path,
     datasets: list[str],
     out_dir: Path,
-    detector: DynamicObjectDetector,
-    quality_weights: dict[str, float],
     tcf_dilate_kernel: int,
-    bes_dilate_kernel: int,
-    bes_erode_kernel: int,
-    bes_sobel_ksize: int,
     fallback_applied_map: dict[str, bool] | None = None,
     top_k: int = 3,
 ) -> tuple[Path, Path]:
@@ -984,12 +970,7 @@ def build_failure_case_index(
         _, per_frame_metrics, _ = compute_remove_quality(
             frames_bgr=frames,
             masks_u8=masks,
-            detector=detector,
-            quality_weights=quality_weights,
             tcf_dilate_kernel=tcf_dilate_kernel,
-            bes_dilate_kernel=bes_dilate_kernel,
-            bes_erode_kernel=bes_erode_kernel,
-            bes_sobel_ksize=bes_sobel_ksize,
         )
         scored = sorted(
             [(float(m.get("TCF", 0.0)), idx) for idx, m in enumerate(per_frame_metrics)],
@@ -1002,14 +983,10 @@ def build_failure_case_index(
             name = frame_names[idx]
             out_img = out_dir / f"{ds}_{Path(name).stem}_rank{rank}_tcf{tcf_score:.4f}.png"
             cv2.imwrite(str(out_img), frame)
-            ros = float(per_frame_metrics[idx].get("ROS", 0.0))
             tcf = float(per_frame_metrics[idx].get("TCF", 0.0))
-            bes = float(per_frame_metrics[idx].get("BES", 0.0))
             explanation = classify_failure_case(
                 dataset=ds,
-                ros=ros,
                 tcf=tcf,
-                bes=bes,
                 wild_fallback_applied=bool(fallback_applied_map.get(ds, False)),
             )
 
@@ -1028,8 +1005,6 @@ def build_failure_case_index(
                     "frame": name,
                     "rank": rank,
                     "tcf": tcf,
-                    "ros": ros,
-                    "bes": bes,
                     "explanation": explanation,
                     "compare_image": str(out_img),
                 }
@@ -1050,8 +1025,6 @@ def build_failure_case_index(
                 "frame",
                 "rank",
                 "tcf",
-                "ros",
-                "bes",
                 "explanation",
                 "compare_image",
             ],
@@ -1206,11 +1179,12 @@ def write_ablation_outputs(
                 "dilation_kernel": r.spec.dilation_kernel,
                 "inpaint_method": r.spec.inpaint_method,
                 "temporal_window": r.spec.temporal_window,
+                GT_COVERAGE_KEY: r.aggregate.get(GT_COVERAGE_KEY),
                 "JM": r.aggregate.get("JM"),
                 "JR": r.aggregate.get("JR"),
-                "ROS": r.aggregate.get("ROS"),
+                "MaskScore": mask_score(r.aggregate),
                 "TCF": r.aggregate.get("TCF"),
-                "BES": r.aggregate.get("BES"),
+                "FAST_VQA": r.aggregate.get("FAST_VQA"),
                 "mean_mask_ratio": mean_ratio,
                 "active_frame_ratio": active_ratio,
                 "pred_root": str(r.candidate_root),
@@ -1232,11 +1206,12 @@ def write_ablation_outputs(
                 "dilation_kernel",
                 "inpaint_method",
                 "temporal_window",
+                GT_COVERAGE_KEY,
                 "JM",
                 "JR",
-                "ROS",
+                "MaskScore",
                 "TCF",
-                "BES",
+                "FAST_VQA",
                 "mean_mask_ratio",
                 "active_frame_ratio",
                 "pred_root",
@@ -1275,10 +1250,10 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Final Aggregate")
     lines.append("")
-    lines.append("| JM | JR | ROS | TCF | BES |")
-    lines.append("| ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| GT_Coverage | JM | JR | MaskScore | TCF | FAST_VQA |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: |")
     lines.append(
-        f"| {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('ROS')} | {aggregate.get('TCF')} | {aggregate.get('BES')} |"
+        f"| {aggregate.get(GT_COVERAGE_KEY)} | {aggregate.get('JM')} | {aggregate.get('JR')} | {aggregate.get('MaskScore')} | {aggregate.get('TCF')} | {aggregate.get('FAST_VQA')} |"
     )
     lines.append("")
     lines.append("## Stage Best")
@@ -1296,12 +1271,12 @@ def write_acceptance_report(
     lines.append("")
     lines.append("## Per-Dataset Metrics")
     lines.append("")
-    lines.append("| Dataset | JM | JR | ROS | TCF | BES | Fallback Applied |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- |")
+    lines.append("| Dataset | GT_Coverage | JM | JR | MaskScore | TCF | FAST_VQA | Fallback Applied |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     for ds_name, ds_payload in datasets.items():
         metrics = ds_payload.get("metrics", {}) or {}
         lines.append(
-            f"| {ds_name} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('ROS')} | {metrics.get('TCF')} | {metrics.get('BES')} | {bool(fallback_applied_final.get(ds_name, False))} |"
+            f"| {ds_name} | {metrics.get(GT_COVERAGE_KEY)} | {metrics.get('JM')} | {metrics.get('JR')} | {metrics.get('MaskScore')} | {metrics.get('TCF')} | {metrics.get('FAST_VQA')} | {bool(fallback_applied_final.get(ds_name, False))} |"
         )
     lines.append("")
     lines.append("## Acceptance Checks")
@@ -1419,15 +1394,7 @@ def main() -> None:
     enforce_selection_coverage = bool(eval_selection_cfg.get("enforce_if_candidate_available", True))
     allow_missing_gt = bool(eval_cfg.get("allow_missing_gt", True))
     save_visualization = bool(eval_cfg.get("save_visualization", True))
-    quality_weights_cfg = eval_cfg.get("quality_weights", {}) or {}
-    quality_weights = {
-        "ros": float(quality_weights_cfg.get("ros", 0.5)),
-        "tcf": float(quality_weights_cfg.get("tcf", 0.3)),
-        "bes": float(quality_weights_cfg.get("bes", 0.2)),
-    }
-    ros_cfg = eval_cfg.get("ros", {}) or {}
     tcf_cfg = eval_cfg.get("tcf", {}) or {}
-    bes_cfg = eval_cfg.get("bes", {}) or {}
     if selection_coverage_constraints:
         logger.info(
             "Selection coverage constraints=%s enforce_if_candidate_available=%s",
@@ -1435,15 +1402,6 @@ def main() -> None:
             str(enforce_selection_coverage).lower(),
         )
     seg_cfg = part1_cfg.get("segmentation", {}) or {}
-    detector = DynamicObjectDetector(
-        backend_priority=[str(x).strip().lower() for x in (ros_cfg.get("backend_priority", ["yolo", "maskrcnn"]) or []) if str(x).strip()],
-        dynamic_classes=dynamic_classes,
-        yolo_model=str(seg_cfg.get("yolo_model", "yolov8n-seg.pt")),
-        yolo_conf=float(seg_cfg.get("yolo_conf_threshold", 0.25)),
-        yolo_imgsz=int(seg_cfg.get("yolo_imgsz", 960)),
-        maskrcnn_conf=float(seg_cfg.get("maskrcnn_conf_threshold", 0.5)),
-        device=device,
-    )
 
     pred_root_base = resolve_repo_path(Path(args.pred_root))
     exp_pred_root = pred_root_base / exp_id
@@ -1563,14 +1521,15 @@ def main() -> None:
             stage_results.append(result)
             all_results.append(result)
             logger.info(
-                "[%s] candidate=%s -> JM=%.4f JR=%.4f ROS=%.4f TCF=%.4f BES=%.4f",
+                "[%s] candidate=%s -> GT_Coverage=%.4f JM=%.4f JR=%.4f MaskScore=%.4f TCF=%.4f FAST_VQA=%.4f",
                 stage_name,
                 spec.name,
+                metric_or_neg_inf(result.aggregate, GT_COVERAGE_KEY),
                 metric_or_neg_inf(result.aggregate, "JM"),
                 metric_or_neg_inf(result.aggregate, "JR"),
-                metric_or_neg_inf(result.aggregate, "ROS"),
+                mask_score(result.aggregate),
                 metric_or_neg_inf(result.aggregate, "TCF"),
-                metric_or_neg_inf(result.aggregate, "BES"),
+                metric_or_neg_inf(result.aggregate, "FAST_VQA"),
             )
 
         best = select_best(
@@ -1689,12 +1648,7 @@ def main() -> None:
         gt_root=gt_root,
         datasets=selected_datasets,
         out_dir=REPO_ROOT / "outputs" / "figures" / exp_id / "failure_cases",
-        detector=detector,
-        quality_weights=quality_weights,
         tcf_dilate_kernel=int(tcf_cfg.get("dilate_kernel", 5)),
-        bes_dilate_kernel=int(bes_cfg.get("dilate_kernel", 5)),
-        bes_erode_kernel=int(bes_cfg.get("erode_kernel", 3)),
-        bes_sobel_ksize=int(bes_cfg.get("sobel_ksize", 3)),
         fallback_applied_map={ds: bool(v.get("fallback_applied", False)) for ds, v in best_a5.mask_stats.items()},
         top_k=3,
     )

@@ -28,6 +28,7 @@ from src.part2.run_sota import (
     run_evaluation,
     write_json,
 )
+from src.common.mask_ranking import GT_COVERAGE_KEY, mask_score, mask_tiebreak_key, select_maskscore_best
 from src.common.video_io import (
     cleanup_video_only_outputs,
     decode_video_frames,
@@ -361,29 +362,40 @@ def main() -> None:
             )
             agg = summary.get("aggregate", {}) or {}
             tcf = metric_or_pos_inf(agg, "TCF")
-            variant_results.append({"name": vname, "tcf": tcf, "aggregate": agg, "pred_root": str(pred_root)})
-            logger.info("Variant %s TCF=%.4f", vname, tcf)
+            score = mask_score(agg)
+            variant_results.append({"name": vname, "mask_score": score, "tcf": tcf, "aggregate": agg, "pred_root": str(pred_root)})
+            logger.info("Variant %s MaskScore=%.4f TCF=%.4f", vname, score, tcf)
             if not args.keep_variant_videos and pred_root.exists():
                 shutil.rmtree(pred_root)
                 logger.info("[%s] cleaned intermediate variant videos: %s", vname, pred_root)
         except Exception as e:
             logger.error("Variant %s failed: %s", vname, e, exc_info=True)
-            variant_results.append({"name": vname, "tcf": float("inf"), "aggregate": {}, "pred_root": "", "error": str(e)})
+            variant_results.append({"name": vname, "mask_score": float("-inf"), "tcf": float("inf"), "aggregate": {}, "pred_root": "", "error": str(e)})
             if not args.keep_variant_videos and variant_pred_root.exists():
                 shutil.rmtree(variant_pred_root)
                 logger.info("[%s] cleaned failed intermediate variant videos: %s", vname, variant_pred_root)
 
-    successful_variants = [vr for vr in variant_results if math.isfinite(float(vr.get("tcf", float("inf"))))]
+    successful_variants = [
+        vr
+        for vr in variant_results
+        if math.isfinite(float(vr.get("tcf", float("inf"))))
+        and math.isfinite(float(vr.get("mask_score", float("-inf"))))
+    ]
+    if not successful_variants:
+        successful_variants = [vr for vr in variant_results if math.isfinite(float(vr.get("tcf", float("inf"))))]
     if not successful_variants:
         error_lines = []
         for vr in variant_results:
             error_lines.append(f"{vr.get('name')}: {vr.get('error', 'unknown error')}")
         raise RuntimeError("All Phase 5 variants failed:\n" + "\n".join(error_lines))
 
-    # Select best by TCF (lower is better)
-    best = min(successful_variants, key=lambda x: float(x["tcf"]))
+    best = select_maskscore_best(
+        successful_variants,
+        lambda row: row.get("aggregate", {}) or {},
+        tiebreak_fn=lambda row: mask_tiebreak_key(row.get("aggregate", {}) or {}),
+    )
     best_name = best["name"]
-    logger.info("Best variant: %s (TCF=%.4f)", best_name, best["tcf"])
+    logger.info("Best variant: %s (MaskScore=%.4f TCF=%.4f)", best_name, float(best.get("mask_score", float("nan"))), best["tcf"])
 
     # Re-run best variant as the canonical exp_id output
     best_variant = next(v for v in VARIANTS if v["name"] == best_name)
@@ -426,7 +438,21 @@ def main() -> None:
 
     # phase5_ablation.csv
     with (metrics_dir / "phase5_ablation.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["variant", "mask_dilation", "denoise_strength", "keyframe_interval", "TCF", "JM", "JR", "ROS", "BES"])
+        w = csv.DictWriter(
+            f,
+            fieldnames=[
+                "variant",
+                "mask_dilation",
+                "denoise_strength",
+                "keyframe_interval",
+                GT_COVERAGE_KEY,
+                "JM",
+                "JR",
+                "MaskScore",
+                "TCF",
+                "FAST_VQA",
+            ],
+        )
         w.writeheader()
         for vr in variant_results:
             vspec = next((v for v in VARIANTS if v["name"] == vr["name"]), {})
@@ -436,17 +462,21 @@ def main() -> None:
                 "mask_dilation": vspec.get("mask_dilation", ""),
                 "denoise_strength": vspec.get("denoise_strength", ""),
                 "keyframe_interval": vspec.get("keyframe_interval", ""),
-                "TCF": agg.get("TCF", ""),
+                GT_COVERAGE_KEY: agg.get(GT_COVERAGE_KEY, ""),
                 "JM": agg.get("JM", ""),
                 "JR": agg.get("JR", ""),
-                "ROS": agg.get("ROS", ""),
-                "BES": agg.get("BES", ""),
+                "MaskScore": mask_score(agg),
+                "TCF": agg.get("TCF", ""),
+                "FAST_VQA": agg.get("FAST_VQA", ""),
             })
 
     write_json(metrics_dir / "phase5_selection.json", {
         "selected_variant": best_name,
+        "selection_policy": "maskscore",
+        "maskscore_formula": "0.5*GT_Coverage+0.25*JM+0.25*JR",
+        "mask_score": best.get("mask_score"),
         "tcf": best["tcf"],
-        "all_variants": [{"name": vr["name"], "tcf": vr["tcf"]} for vr in variant_results],
+        "all_variants": [{"name": vr["name"], "mask_score": vr.get("mask_score"), "tcf": vr["tcf"]} for vr in variant_results],
     })
 
     # phase5_b_vs_g.csv
@@ -457,21 +487,23 @@ def main() -> None:
     )
     g_agg = final_summary.get("aggregate", {}) or {}
     with (metrics_dir / "phase5_b_vs_g.csv").open("w", newline="", encoding="utf-8") as f:
-        w2 = csv.DictWriter(f, fieldnames=["method", "JM", "JR", "ROS", "TCF", "BES"])
+        metric_keys = [GT_COVERAGE_KEY, "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]
+        w2 = csv.DictWriter(f, fieldnames=["method", *metric_keys])
         w2.writeheader()
-        w2.writerow({"method": ref_label, **{k: ref_agg.get(k, "") for k in ["JM", "JR", "ROS", "TCF", "BES"]}})
-        w2.writerow({"method": f"G-best ({best_name})", **{k: g_agg.get(k, "") for k in ["JM", "JR", "ROS", "TCF", "BES"]}})
+        w2.writerow({"method": ref_label, **{k: ref_agg.get(k, "") for k in metric_keys}})
+        w2.writerow({"method": f"G-best ({best_name})", **{k: g_agg.get(k, "") for k in metric_keys}})
 
     # per_dataset.csv
     eval_per_ds = metrics_dir / "per_dataset.csv"
     if not eval_per_ds.exists():
         ds_data = final_summary.get("datasets", {}) or {}
         with eval_per_ds.open("w", newline="", encoding="utf-8") as f:
-            w3 = csv.DictWriter(f, fieldnames=["dataset", "JM", "JR", "ROS", "TCF", "BES"])
+            metric_keys = [GT_COVERAGE_KEY, "JM", "JR", "MaskScore", "TCF", "FAST_VQA"]
+            w3 = csv.DictWriter(f, fieldnames=["dataset", *metric_keys])
             w3.writeheader()
             for ds_name, ds_info in ds_data.items():
                 m = (ds_info.get("metrics", {}) or {})
-                w3.writerow({"dataset": ds_name, **{k: m.get(k, "") for k in ["JM", "JR", "ROS", "TCF", "BES"]}})
+                w3.writerow({"dataset": ds_name, **{k: m.get(k, "") for k in metric_keys}})
 
     write_json(metrics_dir / "phase5_run_meta.json", {
         "exp_id": args.exp_id,
@@ -504,26 +536,29 @@ def main() -> None:
         "",
         f"GPU-based Stable Diffusion Inpainting (SD 1.5). Input base/masks from {args.phase2_exp_id}.",
         "Four variants (G-low/mid/high/hybrid) ablate mask_dilation, denoise_strength, and keyframe_interval.",
-        "Best variant selected by TCF (lower is better).",
+        "Best variant selected by MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR; TCF/FAST-VQA are reported as video-quality side metrics.",
         "",
         "## Ablation",
         "",
-        "| Variant | mask_dilation | denoise_strength | keyframe_interval | TCF |",
-        "|---------|--------------|-----------------|-------------------|-----|",
+        "| Variant | mask_dilation | denoise_strength | keyframe_interval | GT_Coverage | JM | JR | MaskScore | TCF | FAST_VQA |",
+        "|---------|--------------|-----------------|-------------------|-------------|----|----|-----------|-----|----------|",
     ]
     for vr in variant_results:
         vspec = next((v for v in VARIANTS if v["name"] == vr["name"]), {})
         agg = vr.get("aggregate", {}) or {}
-        lines.append(f"| {vr['name']} | {vspec.get('mask_dilation','')} | {vspec.get('denoise_strength','')} | {vspec.get('keyframe_interval','')} | {agg.get('TCF', 'N/A')} |")
+        lines.append(
+            f"| {vr['name']} | {vspec.get('mask_dilation','')} | {vspec.get('denoise_strength','')} | {vspec.get('keyframe_interval','')} | "
+            f"{agg.get(GT_COVERAGE_KEY, 'N/A')} | {agg.get('JM', 'N/A')} | {agg.get('JR', 'N/A')} | {vr.get('mask_score', 'N/A')} | {agg.get('TCF', 'N/A')} | {agg.get('FAST_VQA', 'N/A')} |"
+        )
 
     lines += [
         "",
         f"## {ref_label} vs G-best",
         "",
-        "| Method | JM | JR | ROS | TCF | BES |",
-        "|--------|----|----|-----|-----|-----|",
-        f"| {ref_label} | {ref_agg.get('JM','')} | {ref_agg.get('JR','')} | {ref_agg.get('ROS','')} | {ref_agg.get('TCF','')} | {ref_agg.get('BES','')} |",
-        f"| G-best ({best_name}) | {g_agg.get('JM','')} | {g_agg.get('JR','')} | {g_agg.get('ROS','')} | {g_agg.get('TCF','')} | {g_agg.get('BES','')} |",
+        "| Method | GT_Coverage | JM | JR | MaskScore | TCF | FAST_VQA |",
+        "|--------|-------------|----|----|-----------|-----|----------|",
+        f"| {ref_label} | {ref_agg.get(GT_COVERAGE_KEY,'')} | {ref_agg.get('JM','')} | {ref_agg.get('JR','')} | {ref_agg.get('MaskScore','')} | {ref_agg.get('TCF','')} | {ref_agg.get('FAST_VQA','')} |",
+        f"| G-best ({best_name}) | {g_agg.get(GT_COVERAGE_KEY,'')} | {g_agg.get('JM','')} | {g_agg.get('JR','')} | {g_agg.get('MaskScore','')} | {g_agg.get('TCF','')} | {g_agg.get('FAST_VQA','')} |",
         "",
         "## Failure Analysis",
         "",
