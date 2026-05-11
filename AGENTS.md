@@ -19,9 +19,11 @@
   - `tennis`
 
 ### 1.3 指标（硬约束）
-- Mask 质量：JM（IoU mean）、JR（IoU recall）。
-- 视频移除质量：ROS、TCF、BES。
+- Mask 质量：`GT_Coverage`、JM（IoU mean）、JR（IoU recall）与 `MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR`。
+- 视频质量：彩色 TCF（越低越稳定）与 FAST-VQA（越高越好）作为当前统一报告口径。
+- 课程 PDF 中要求 PSNR/SSIM 时，仅在存在干净背景 GT 的实验上补充；若 mandatory 数据集没有干净背景 GT，必须在报告中说明替代指标原因。
 - 定性结果：多方法可视化对比图与失败案例。
+- 旧口径 ROS/BES 不进入最终排名；若引用历史实验，必须明确标记为 legacy。
 
 ## 2. 技术路线优先级
 
@@ -92,8 +94,9 @@
 - 若某方法需要额外预处理，必须在日志中写清楚，不得隐式处理。
 
 ### 5.2 评估统一
-- JM/JR 计算逻辑在所有路线中保持一致。
-- 质量评估统一使用 ROS/TCF/BES。
+- `GT_Coverage`、JM/JR 与 `MaskScore` 计算逻辑在所有路线中保持一致。
+- 视频质量统一报告彩色 TCF 与 FAST-VQA；TCF 只作为时序平滑辅助指标，不作为 best 选择依据。
+- PSNR/SSIM 只在有干净背景 GT 的实验上报告；mandatory 数据集若只提供 mask GT，不得伪造 PSNR/SSIM。
 - 表格中的数值必须可追溯到 `outputs/metrics/` 原始文件。
 
 ### 5.3 可视化统一
