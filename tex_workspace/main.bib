@@ -1,0 +1,139 @@
+@String(CVPR  = {CVPR})
+@String(ICCV  = {ICCV})
+@String(ECCV  = {ECCV})
+@String(NIPS  = {NeurIPS})
+@String(PAMI  = {IEEE TPAMI})
+
+% --- Object Detection ---
+@inproceedings{rcnn,
+  author    = {Ross Girshick and Jeff Donahue and Trevor Darrell and Jitendra Malik},
+  title     = {Rich Feature Hierarchies for Accurate Object Detection and Semantic Segmentation},
+  booktitle = CVPR,
+  pages     = {580--587},
+  year      = {2014}
+}
+
+@inproceedings{maskrcnn,
+  author    = {Kaiming He and Georgia Gkioxari and Piotr Doll{\'a}r and Ross Girshick},
+  title     = {Mask {R-CNN}},
+  booktitle = {ICCV},
+  pages     = {2961--2969},
+  year      = {2017}
+}
+
+@inproceedings{yolo,
+  author    = {Joseph Redmon and Santosh Divvala and Ross Girshick and Ali Farhadi},
+  title     = {You Only Look Once: Unified, Real-Time Object Detection},
+  booktitle = CVPR,
+  pages     = {779--788},
+  year      = {2016}
+}
+
+@inproceedings{detr,
+  author    = {Nicolas Carion and Francisco Massa and Gabriel Synnaeve and Nicolas Usunier and Alexander Kirillov and Sergey Zagoruyko},
+  title     = {End-to-End Object Detection with Transformers},
+  booktitle = {ECCV},
+  pages     = {213--229},
+  year      = {2020}
+}
+
+% --- Instance Segmentation ---
+@inproceedings{sam,
+  author    = {Alexander Kirillov and Eric Mintun and Nikhila Ravi and Hanzi Mao and Chloe Rolland and Laura Gustafson and Tete Xiao and Spencer Whitehead and Alexander C. Berg and Wan-Yen Lo and others},
+  title     = {Segment Anything},
+  booktitle = {ICCV},
+  pages     = {4015--4026},
+  year      = {2023}
+}
+
+@article{sam2,
+  author    = {Nikhila Ravi and Valentin Gabeur and Yuan-Ting Hu and Ronghang Hu and Chaitanya Ryali and Tengyu Ma and Haitham Khedr and Roman R{\"a}dle and Chloe Rolland and Laura Gustafson and others},
+  title     = {{SAM} 2: Segment Anything in Images and Videos},
+  journal   = {arXiv preprint arXiv:2408.00714},
+  year      = {2024}
+}
+
+@article{sam3,
+  author    = {Nicolas Carion and Laura Gustafson and Yuan-Ting Hu and Shoubhik Debnath and Ronghang Hu and Didac Suris and Chaitanya Ryali and Kalyan Vasudev Alwala and Haitham Khedr and Andrew Huang and others},
+  title     = {{SAM} 3: Segment Anything with Concepts},
+  journal   = {arXiv preprint arXiv:2511.16719},
+  year      = {2025}
+}
+
+@article{trackanything,
+  author    = {Jinyu Yang and Mingqi Gao and Zhe Li and Shang Gao and Fangjing Wang and Feng Zheng},
+  title     = {Track Anything: Segment Anything Meets Videos},
+  journal   = {arXiv preprint arXiv:2304.11968},
+  year      = {2023}
+}
+
+@article{vggt4d,
+  author    = {Yu Hu and Chong Cheng and Sicheng Yu and Xiaoyang Guo and Hao Wang},
+  title     = {{VGGT4D}: Mining Motion Cues in Visual Geometry Transformers for {4D} Scene Reconstruction},
+  journal   = {arXiv preprint arXiv:2511.19971},
+  year      = {2025}
+}
+
+@inproceedings{vggt,
+  author    = {Jianyuan Wang and Minghao Chen and Nikita Karaev and Andrea Vedaldi and Christian Rupprecht and David Novotny},
+  title     = {{VGGT}: Visual Geometry Grounded Transformer},
+  booktitle = CVPR,
+  pages     = {5294--5306},
+  year      = {2025}
+}
+
+@article{mapanything,
+  author    = {Nikhil Keetha and Norman Muller and Johannes Schonberger and Lorenzo Porzi and Yuchen Zhang and Tobias Fischer and Arno Knapitsch and Duncan Zauss and Ethan Weber and Nelson Antunes and others},
+  title     = {MapAnything: Universal Feed-Forward Metric {3D} Reconstruction},
+  journal   = {arXiv preprint arXiv:2509.13414},
+  year      = {2025}
+}
+
+@article{pi3,
+  author    = {Yifan Wang and Jianjun Zhou and Haoyi Zhu and Wenzheng Chang and Yang Zhou and Zizun Li and Junyi Chen and Jiangmiao Pang and Chunhua Shen and Tong He},
+  title     = {Pi3: Permutation-Equivariant Visual Geometry Learning},
+  journal   = {arXiv preprint arXiv:2507.13347},
+  year      = {2025}
+}
+
+% --- Video Inpainting ---
+@inproceedings{fgvc,
+  author    = {Chen Gao and Ayush Saraf and Jia-Bin Huang and Johannes Kopf},
+  title     = {Flow-Edge Guided Video Completion},
+  booktitle = {ECCV},
+  pages     = {713--729},
+  year      = {2020}
+}
+
+@inproceedings{e2fgvi,
+  author    = {Zhen Li and Cheng-Ze Lu and Jianhua Qin and Chun-Le Guo and Ming-Ming Cheng},
+  title     = {Towards an End-to-End Framework for Flow-Guided Video Inpainting},
+  booktitle = CVPR,
+  pages     = {17562--17571},
+  year      = {2022}
+}
+
+@inproceedings{propainter,
+  author    = {Shangchen Zhou and Chongyi Li and Kelvin C.K. Chan and Chen Change Loy},
+  title     = {{ProPainter}: Improving Propagation and Transformer for Video Inpainting},
+  booktitle = {ICCV},
+  pages     = {10477--10486},
+  year      = {2023}
+}
+
+% --- Diffusion / Generative ---
+@inproceedings{ldm,
+  author    = {Robin Rombach and Andreas Blattmann and Dominik Lorenz and Patrick Esser and Bj{\"o}rn Ommer},
+  title     = {High-Resolution Image Synthesis with Latent Diffusion Models},
+  booktitle = CVPR,
+  pages     = {10684--10695},
+  year      = {2022}
+}
+
+@inproceedings{controlnet,
+  author    = {Lvmin Zhang and Anyi Rao and Maneesh Agrawala},
+  title     = {Adding Conditional Control to Text-to-Image Diffusion Models},
+  booktitle = {ICCV},
+  pages     = {3836--3847},
+  year      = {2023}
+}

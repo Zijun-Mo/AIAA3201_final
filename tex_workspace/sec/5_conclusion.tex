@@ -1,0 +1,25 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a progressive video object removal pipeline, systematically advancing from a
+classical optical-flow-based baseline to a geometry-guided segmentation approach. Our key
+finding is that mask quality is the primary bottleneck, but only after the prior is
+converted into a reliable video mask. Raw VGGT4D masks over-cover the target and perform
+poorly; VGGT4D-derived prompt anchors propagated by SAM~2 provide the largest accepted
+single improvement over Route~B (+0.0460 MaskScore). SAM~3 refinement is complementary
+but small after Route~F (+0.0010 MaskScore). ProPainter remains the most reliable
+inpainting module in our experiments once given high-quality masks.
+
+\paragraph{Limitations.}
+Our best method still struggles on \emph{bmx-trees} (MaskScore~$0.7352$) due to fast
+motion and complex foliage occlusion. VGGT4D priors are sensitive to how they are
+post-processed into prompts and propagated by the downstream backend. Diffusion-based
+inpainting (Route~G) lowers TCF in the selected variant but also lowers FAST-VQA and
+shows temporal and boundary artifacts, so it is retained only as failure analysis.
+
+\paragraph{Future Work.}
+Replacing VGGT with stronger 3D foundation models (Pi3~\cite{pi3},
+MapAnything~\cite{mapanything}) may further improve geometry priors. Video diffusion
+models with temporal attention could address the flickering failure mode of Route~G.
+Extending evaluation to the full DAVIS benchmark would provide a more comprehensive
+assessment.

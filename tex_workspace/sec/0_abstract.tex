@@ -1,0 +1,20 @@
+\begin{abstract}
+We present a progressive pipeline for automatic dynamic object removal and background
+restoration in videos. Starting from a classical baseline combining Mask R-CNN instance
+segmentation, sparse optical flow filtering, and \texttt{cv2.inpaint}, we advance to a
+state-of-the-art pipeline built on Track Anything and ProPainter. We then introduce two
+complementary improvements: SAM~3 mask refinement (Route~E) and geometry-guided
+segmentation via VGGT4D attention priors (Route~F). In the accepted Route~F run, VGGT4D
+priors are converted into prompt anchors and propagated by SAM~2, the backend not selected
+by the Route~B Track Anything baseline. Our best configuration (Phase~6) applies SAM~3
+refinement to this F-best prior, achieving a MaskScore of \textbf{0.8561} on the two
+mandatory datasets with mask ground truth (\emph{bmx-trees}, \emph{tennis}). This is an
+absolute gain of \textbf{+0.0639} over the classical baseline and \textbf{+0.0470} over
+Route~B. We further analyze a diffusion-based inpainting route (Route~G) under the same
+Route~B masks and document its temporal flicker, boundary seams, and lower FAST-VQA. Our
+evaluation reports GT Coverage, Jaccard Mean (JM), Jaccard Recall (JR), Temporal
+Consistency Factor (TCF), and FAST-VQA; PSNR/SSIM are omitted because the mandatory
+videos do not provide clean-background ground truth. Our code and results are publicly
+available at \url{https://github.com/Zijun-Mo/AIAA3201_final}. Our project page is 
+available at \url{https://zijun-mo.github.io/AIAA3201_final/}.
+\end{abstract}

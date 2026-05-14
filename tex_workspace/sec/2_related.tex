@@ -1,0 +1,35 @@
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Object Detection and Instance Segmentation.}
+R-CNN~\cite{rcnn} pioneered region-based detection; Mask R-CNN~\cite{maskrcnn} extended it
+to instance segmentation. YOLO~\cite{yolo} introduced single-shot real-time detection.
+DETR~\cite{detr} reformulated detection as a set-prediction problem with Transformers,
+enabling end-to-end training without hand-crafted anchors.
+
+\paragraph{Promptable Segmentation and Video Tracking.}
+SAM~\cite{sam} demonstrated that a single model with point/box prompts can segment
+arbitrary objects. SAM~2~\cite{sam2} extended this to the video domain with a streaming
+memory mechanism. Track Anything~\cite{trackanything} combines SAM with XMem for
+interactive video object tracking. SAM~3~\cite{sam3} further improves mask quality by
+incorporating concept-level understanding, yielding sharper boundaries.
+
+\paragraph{Geometry-Guided Segmentation.}
+VGGT~\cite{vggt} is a Visual Geometry Grounded Transformer that produces dense 3D
+predictions from images. VGGT4D~\cite{vggt4d} mines motion cues from VGGT attention maps
+via Gram similarity to achieve zero-shot dynamic object segmentation without any
+fine-tuning. MapAnything~\cite{mapanything} and Pi3~\cite{pi3} represent newer 3D
+foundation models that could serve as stronger backbones.
+
+\paragraph{Video Inpainting.}
+FGVC~\cite{fgvc} uses flow-edge guidance for video completion. E2FGVI~\cite{e2fgvi}
+proposes an end-to-end flow-guided framework. ProPainter~\cite{propainter} (ICCV 2023)
+combines dual-domain propagation (optical flow + features) with a sparse Transformer,
+achieving state-of-the-art performance on large occlusions.
+
+\paragraph{Diffusion-Based Inpainting.}
+Latent Diffusion Models (LDM)~\cite{ldm} enable high-resolution image synthesis.
+ControlNet~\cite{controlnet} is a related spatial-conditioning extension, but our
+Route~G experiments use Stable Diffusion inpainting directly under fixed masks. Applying
+such frame/keyframe-level diffusion to video inpainting introduces temporal inconsistency,
+which we analyze in Section~\ref{sec:exp}.

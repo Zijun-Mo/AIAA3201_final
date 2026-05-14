@@ -1,0 +1,344 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - heading "Dynamic Object Removal and Background Restoration in Videos" [level=1] [ref=e4]
+    - paragraph [ref=e5]: A progressive video object removal system, moving from a classical Mask R-CNN baseline to Track Anything + ProPainter and geometry-guided mask refinement.
+    - paragraph [ref=e6]: Zijun Mo Xiaolong Qiao
+    - paragraph [ref=e7]: HKUST (Guangzhou) | AIAA 3201 Spring 2026
+    - generic [ref=e8]:
+      - link "GitHub" [ref=e9] [cursor=pointer]:
+        - /url: https://github.com/Zijun-Mo/AIAA3201_final
+      - link "Report Source" [ref=e10] [cursor=pointer]:
+        - /url: https://github.com/Zijun-Mo/AIAA3201_final/tree/main/tex_workspace
+      - link "Demo Videos" [ref=e11] [cursor=pointer]:
+        - /url: https://github.com/Zijun-Mo/AIAA3201_final/tree/main/docs/videos
+  - generic [ref=e12]:
+    - heading "Abstract" [level=2] [ref=e13]
+    - paragraph [ref=e14]:
+      - text: We study automatic dynamic object removal and background restoration on the mandatory videos
+      - emphasis [ref=e15]: wild
+      - text: ","
+      - emphasis [ref=e16]: bmx-trees
+      - text: ", and"
+      - emphasis [ref=e17]: tennis
+      - text: . The system starts from a classical baseline combining Mask R-CNN instance masks, sparse optical-flow filtering, temporal borrowing, and
+      - code [ref=e18]: cv2.inpaint
+      - text: ". It then advances to a Track Anything + ProPainter pipeline and evaluates two mask-side improvements: SAM 3 refinement and VGGT4D geometry priors."
+    - paragraph [ref=e19]:
+      - text: "The corrected final route is important: Route F does not use Track Anything fusion as the final mask. VGGT4D outputs are converted into prompt anchors and propagated with SAM 2, the alternate backend to the Route B Track Anything baseline. Phase 6 applies SAM 3 refinement on top of this F-best prior and reaches"
+      - strong [ref=e20]: 0.8561 MaskScore
+      - text: on the two datasets with ground-truth masks. This is an absolute
+      - strong [ref=e21]: "+0.0639"
+      - text: over Route A and
+      - strong [ref=e22]: "+0.0470"
+      - text: over Route B; the gain over Route F alone is only
+      - strong [ref=e23]: "+0.0010"
+      - text: .
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]: "0.8561"
+        - generic [ref=e27]: Best aggregate MaskScore, Phase6-best
+      - generic [ref=e28]:
+        - generic [ref=e29]: "+0.0470"
+        - generic [ref=e30]: Absolute MaskScore gain over Track Anything + ProPainter
+      - generic [ref=e31]:
+        - generic [ref=e32]: "+0.0010"
+        - generic [ref=e33]: Additional gain from adding SAM 3 after Route F
+      - generic [ref=e34]:
+        - generic [ref=e35]: "0.9770"
+        - generic [ref=e36]: Phase 6 MaskScore on tennis; bmx-trees remains harder
+  - generic [ref=e37]:
+    - heading "Pipeline Overview" [level=2] [ref=e38]
+    - img "Overview of the video object removal pipeline" [ref=e39]
+    - paragraph [ref=e40]: Routes A-F use the same preprocessed input videos. Route G reuses Route B masks and changes only the inpainting module, so it is treated as a diffusion failure analysis rather than as a ranked main method.
+  - generic [ref=e41]:
+    - heading "Corrected Method Summary" [level=2] [ref=e42]
+    - table [ref=e44]:
+      - rowgroup [ref=e45]:
+        - row "Route Accepted configuration Role in the final analysis" [ref=e46]:
+          - columnheader "Route" [ref=e47]
+          - columnheader "Accepted configuration" [ref=e48]
+          - columnheader "Role in the final analysis" [ref=e49]
+      - rowgroup [ref=e50]:
+        - row "A-best Mask R-CNN + sparse optical-flow dynamic filtering + dilation 3 + Telea inpainting + temporal borrowing with window 2. Classical baseline and lower-bound reference." [ref=e51]:
+          - cell "A-best" [ref=e52]:
+            - strong [ref=e53]: A-best
+          - cell "Mask R-CNN + sparse optical-flow dynamic filtering + dilation 3 + Telea inpainting + temporal borrowing with window 2." [ref=e54]
+          - cell "Classical baseline and lower-bound reference." [ref=e55]
+        - row "B-best Track Anything coarse masks, bidirectional no-wrap propagation, and ProPainter with neighbor 8, ref stride 12, subvideo 36, resize 0.75, mask dilation 4. Main SOTA reproduction. It improves JM/JR and FAST-VQA over A, although GT coverage is nearly unchanged." [ref=e56]:
+          - cell "B-best" [ref=e57]:
+            - strong [ref=e58]: B-best
+          - cell "Track Anything coarse masks, bidirectional no-wrap propagation, and ProPainter with neighbor 8, ref stride 12, subvideo 36, resize 0.75, mask dilation 4." [ref=e59]
+          - cell "Main SOTA reproduction. It improves JM/JR and FAST-VQA over A, although GT coverage is nearly unchanged." [ref=e60]
+        - row "B+E SAM 3 multi-anchor refinement on Route B masks, merged by logical OR before ProPainter. Raises coverage and FAST-VQA, but slightly lowers JM, so the gain is a coverage-precision trade-off rather than a uniform boundary improvement." [ref=e61]:
+          - cell "B+E" [ref=e62]:
+            - strong [ref=e63]: B+E
+          - cell "SAM 3 multi-anchor refinement on Route B masks, merged by logical OR before ProPainter." [ref=e64]
+          - cell "Raises coverage and FAST-VQA, but slightly lowers JM, so the gain is a coverage-precision trade-off rather than a uniform boundary improvement." [ref=e65]
+        - row "B+F VGGT4D prior masks are converted into prompt anchors and propagated by SAM 2, because SAM 2 is the alternate backend to Route B's Track Anything. Largest accepted single gain over B. Raw VGGT4D replacement is a negative control with only 0.6087 MaskScore." [ref=e66]:
+          - cell "B+F" [ref=e67]:
+            - strong [ref=e68]: B+F
+          - cell "VGGT4D prior masks are converted into prompt anchors and propagated by SAM 2, because SAM 2 is the alternate backend to Route B's Track Anything." [ref=e69]
+          - cell "Largest accepted single gain over B. Raw VGGT4D replacement is a negative control with only 0.6087 MaskScore." [ref=e70]
+        - row "Phase6-best Route F mask followed by SAM 3 boundary refinement, then ProPainter inpainting. Final Best aggregate MaskScore, but only marginally above Route F." [ref=e71]:
+          - cell "Phase6-best" [ref=e72]:
+            - strong [ref=e73]: Phase6-best
+          - cell "Route F mask followed by SAM 3 boundary refinement, then ProPainter inpainting." [ref=e74]
+          - cell "Final Best aggregate MaskScore, but only marginally above Route F." [ref=e75]:
+            - generic [ref=e76]: Final
+            - text: Best aggregate MaskScore, but only marginally above Route F.
+        - row "Route G Fixed Route B masks with Stable Diffusion inpainting variants and hybrid local redraw. Failure case Lower TCF does not translate into better video quality; flicker, seams, and hallucinated structure remain." [ref=e77]:
+          - cell "Route G" [ref=e78]:
+            - strong [ref=e79]: Route G
+          - cell "Fixed Route B masks with Stable Diffusion inpainting variants and hybrid local redraw." [ref=e80]
+          - cell "Failure case Lower TCF does not translate into better video quality; flicker, seams, and hallucinated structure remain." [ref=e81]:
+            - generic [ref=e82]: Failure case
+            - text: Lower TCF does not translate into better video quality; flicker, seams, and hallucinated structure remain.
+  - generic [ref=e83]:
+    - heading "Evaluation Protocol" [level=2] [ref=e84]
+    - generic [ref=e85]:
+      - paragraph [ref=e86]:
+        - strong [ref=e87]: Datasets.
+        - text: "All three mandatory videos are processed:"
+        - emphasis [ref=e88]: wild
+        - text: ","
+        - emphasis [ref=e89]: bmx-trees
+        - text: ", and"
+        - emphasis [ref=e90]: tennis
+        - text: . Aggregate mask metrics are computed only on
+        - emphasis [ref=e91]: bmx-trees
+        - text: and
+        - emphasis [ref=e92]: tennis
+        - text: ", because"
+        - emphasis [ref=e93]: wild
+        - text: has no ground-truth mask.
+      - paragraph [ref=e94]:
+        - strong [ref=e95]: Selection metric.
+        - text: We rank mask-side methods by
+        - code [ref=e96]: MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR
+        - text: . TCF and FAST-VQA are reported as video-quality side metrics.
+      - paragraph [ref=e97]:
+        - strong [ref=e98]: Temporal metric caveat.
+        - text: Lower TCF means smoother frame-to-frame color changes inside the evaluated region, but blurred or wrong stable fills can also reduce TCF. It is not used as the best-method selector.
+      - paragraph [ref=e99]:
+        - strong [ref=e100]: No PSNR/SSIM.
+        - text: The mandatory videos do not provide clean background ground truth, so PSNR and SSIM are omitted rather than estimated from unsuitable references.
+  - generic [ref=e101]:
+    - heading "Main Quantitative Results" [level=2] [ref=e102]
+    - table [ref=e104]:
+      - rowgroup [ref=e105]:
+        - row "Method GT-Cov JM JR MaskScore Delta MS vs B TCF FAST-VQA" [ref=e106]:
+          - columnheader "Method" [ref=e107]
+          - columnheader "GT-Cov" [ref=e108]
+          - columnheader "JM" [ref=e109]
+          - columnheader "JR" [ref=e110]
+          - columnheader "MaskScore" [ref=e111]
+          - columnheader "Delta MS vs B" [ref=e112]
+          - columnheader "TCF" [ref=e113]
+          - columnheader "FAST-VQA" [ref=e114]
+      - rowgroup [ref=e115]:
+        - row "A-best 0.9222 0.6059 0.7188 0.7923 -0.0168 0.0608 0.0835" [ref=e116]:
+          - cell "A-best" [ref=e117]
+          - cell "0.9222" [ref=e118]
+          - cell "0.6059" [ref=e119]
+          - cell "0.7188" [ref=e120]
+          - cell "0.7923" [ref=e121]
+          - cell "-0.0168" [ref=e122]
+          - cell "0.0608" [ref=e123]
+          - cell "0.0835" [ref=e124]
+        - row "B-best 0.9208 0.6387 0.7562 0.8091 0.0000 0.0640 0.1060" [ref=e125]:
+          - cell "B-best" [ref=e126]
+          - cell "0.9208" [ref=e127]
+          - cell "0.6387" [ref=e128]
+          - cell "0.7562" [ref=e129]
+          - cell "0.8091" [ref=e130]
+          - cell "0.0000" [ref=e131]
+          - cell "0.0640" [ref=e132]
+          - cell "0.1060" [ref=e133]
+        - row "B+E 0.9531 0.6328 0.7625 0.8254 +0.0163 0.0647 0.1258" [ref=e134]:
+          - cell "B+E" [ref=e135]
+          - cell "0.9531" [ref=e136]
+          - cell "0.6328" [ref=e137]
+          - cell "0.7625" [ref=e138]
+          - cell "0.8254" [ref=e139]
+          - cell "+0.0163" [ref=e140]
+          - cell "0.0647" [ref=e141]
+          - cell "0.1258" [ref=e142]:
+            - strong [ref=e143]: "0.1258"
+        - row "B+F 0.9722 0.7074 0.7688 0.8552 +0.0460 0.0698 0.1201" [ref=e144]:
+          - cell "B+F" [ref=e145]
+          - cell "0.9722" [ref=e146]
+          - cell "0.7074" [ref=e147]
+          - cell "0.7688" [ref=e148]
+          - cell "0.8552" [ref=e149]
+          - cell "+0.0460" [ref=e150]
+          - cell "0.0698" [ref=e151]
+          - cell "0.1201" [ref=e152]
+        - row "Phase6-best 0.9741 0.7075 0.7688 0.8561 +0.0470 0.0697 0.1234" [ref=e153]:
+          - cell "Phase6-best" [ref=e154]:
+            - strong [ref=e155]: Phase6-best
+          - cell "0.9741" [ref=e156]:
+            - strong [ref=e157]: "0.9741"
+          - cell "0.7075" [ref=e158]:
+            - strong [ref=e159]: "0.7075"
+          - cell "0.7688" [ref=e160]:
+            - strong [ref=e161]: "0.7688"
+          - cell "0.8561" [ref=e162]:
+            - strong [ref=e163]: "0.8561"
+          - cell "+0.0470" [ref=e164]:
+            - strong [ref=e165]: "+0.0470"
+          - cell "0.0697" [ref=e166]
+          - cell "0.1234" [ref=e167]
+    - paragraph [ref=e168]:
+      - text: Aggregate mask metrics are computed on
+      - emphasis [ref=e169]: bmx-trees
+      - text: and
+      - emphasis [ref=e170]: tennis
+      - text: . The final selection follows MaskScore, not TCF. B+E has the highest FAST-VQA in this table, while Phase6-best has the best mask metrics.
+  - generic [ref=e171]:
+    - heading "Key Experimental Findings" [level=2] [ref=e172]
+    - generic [ref=e173]:
+      - paragraph [ref=e174]:
+        - strong [ref=e175]: A to B.
+        - text: Track Anything + ProPainter gives a real but modest MaskScore gain over the classical baseline (+0.0168), driven by better JM and JR rather than by covering more pixels.
+      - paragraph [ref=e176]:
+        - strong [ref=e177]: Route E.
+        - text: SAM 3 refinement improves GT coverage and yields the highest FAST-VQA, but it slightly lowers JM. The improvement is therefore not a simple across-the-board boundary improvement.
+      - paragraph [ref=e178]:
+        - strong [ref=e179]: Route F.
+        - text: VGGT4D is useful as a prompt prior, not as a raw final mask. The accepted SAM 2 propagation route gives the largest single gain over B (+0.0460 MaskScore).
+      - paragraph [ref=e180]:
+        - strong [ref=e181]: Phase 6.
+        - text: Adding SAM 3 after Route F barely changes the mask metrics (+0.0010 over F), showing diminishing returns after the VGGT4D-derived SAM 2 masks are already in place.
+  - generic [ref=e182]:
+    - heading "Per-Dataset Analysis" [level=2] [ref=e183]
+    - table [ref=e185]:
+      - rowgroup [ref=e186]:
+        - row "Dataset GT-Cov JM JR Phase 6 MaskScore Interpretation" [ref=e187]:
+          - columnheader "Dataset" [ref=e188]
+          - columnheader "GT-Cov" [ref=e189]
+          - columnheader "JM" [ref=e190]
+          - columnheader "JR" [ref=e191]
+          - columnheader "Phase 6 MaskScore" [ref=e192]
+          - columnheader "Interpretation" [ref=e193]
+      - rowgroup [ref=e194]:
+        - row "bmx-trees 0.9548 0.4938 0.5375 0.7352 Still difficult because fast cyclist motion and foliage occlusion fragment the mask." [ref=e195]:
+          - cell "bmx-trees" [ref=e196]
+          - cell "0.9548" [ref=e197]
+          - cell "0.4938" [ref=e198]
+          - cell "0.5375" [ref=e199]
+          - cell "0.7352" [ref=e200]
+          - cell "Still difficult because fast cyclist motion and foliage occlusion fragment the mask." [ref=e201]
+        - row "tennis 0.9935 0.9212 1.0000 0.9770 Much more tractable once prompts are stable; Route B was already strong and Phase 6 improves coverage and JM." [ref=e202]:
+          - cell "tennis" [ref=e203]
+          - cell "0.9935" [ref=e204]
+          - cell "0.9212" [ref=e205]
+          - cell "1.0000" [ref=e206]
+          - cell "0.9770" [ref=e207]
+          - cell "Much more tractable once prompts are stable; Route B was already strong and Phase 6 improves coverage and JM." [ref=e208]
+    - paragraph [ref=e209]: The Phase 6 gap between tennis and bmx-trees is 0.2418 MaskScore, larger than the aggregate gain from stacking SAM 3 after Route F. Residual error is therefore dominated by dataset difficulty.
+  - generic [ref=e210]:
+    - heading "Video Results" [level=2] [ref=e211]
+    - paragraph [ref=e212]: Each panel shows restored video outputs for the mandatory datasets. The comparison uses A-best, B-best, and the final Phase6-best configuration.
+    - generic [ref=e213]:
+      - generic [ref=e214]:
+        - heading "bmx-trees" [level=3] [ref=e215]
+        - generic [ref=e216]:
+          - generic [ref=e218]: "A-best: classical baseline"
+          - generic [ref=e221]: "B-best: Track Anything + ProPainter"
+          - generic [ref=e224]: "Phase6-best: VGGT4D prior + SAM 2 + SAM 3"
+      - generic [ref=e226]:
+        - heading "tennis" [level=3] [ref=e227]
+        - generic [ref=e228]:
+          - generic [ref=e230]: "A-best: classical baseline"
+          - generic [ref=e233]: "B-best: Track Anything + ProPainter"
+          - generic [ref=e236]: "Phase6-best: VGGT4D prior + SAM 2 + SAM 3"
+      - generic [ref=e238]:
+        - heading "wild" [level=3] [ref=e239]
+        - generic [ref=e240]:
+          - generic [ref=e242]: "A-best: classical baseline"
+          - generic [ref=e245]: "B-best: Track Anything + ProPainter"
+          - generic [ref=e248]: "Phase6-best: final method"
+  - generic [ref=e250]:
+    - 'heading "Failure Analysis: Route G" [level=2] [ref=e251]'
+    - paragraph [ref=e252]: Route G fixes the Route B Track Anything masks and changes only the renderer to Stable Diffusion inpainting variants. Because the masks are fixed, the mask metrics remain identical to B-best by construction. G-hybrid has the lowest TCF among the tested diffusion variants (0.0490), but its selected-output FAST-VQA is below B-best (0.0991 vs. 0.1060; the variant table score is 0.1011), and visual inspection shows temporal flicker, boundary seams, and hallucinated structure.
+    - table [ref=e254]:
+      - rowgroup [ref=e255]:
+        - row "Variant Dilation Denoise Keyframe TCF FAST-VQA Role" [ref=e256]:
+          - columnheader "Variant" [ref=e257]
+          - columnheader "Dilation" [ref=e258]
+          - columnheader "Denoise" [ref=e259]
+          - columnheader "Keyframe" [ref=e260]
+          - columnheader "TCF" [ref=e261]
+          - columnheader "FAST-VQA" [ref=e262]
+          - columnheader "Role" [ref=e263]
+      - rowgroup [ref=e264]:
+        - row "G-low 2 0.35 1 0.0642 0.0830 Failure analysis only" [ref=e265]:
+          - cell "G-low" [ref=e266]
+          - cell "2" [ref=e267]
+          - cell "0.35" [ref=e268]
+          - cell "1" [ref=e269]
+          - cell "0.0642" [ref=e270]
+          - cell "0.0830" [ref=e271]
+          - cell "Failure analysis only" [ref=e272]
+        - row "G-mid 10 0.55 4 0.0507 0.0930 Failure analysis only" [ref=e273]:
+          - cell "G-mid" [ref=e274]
+          - cell "10" [ref=e275]
+          - cell "0.55" [ref=e276]
+          - cell "4" [ref=e277]
+          - cell "0.0507" [ref=e278]
+          - cell "0.0930" [ref=e279]
+          - cell "Failure analysis only" [ref=e280]
+        - row "G-high 20 0.75 1 0.0722 0.0791 Failure analysis only" [ref=e281]:
+          - cell "G-high" [ref=e282]
+          - cell "20" [ref=e283]
+          - cell "0.75" [ref=e284]
+          - cell "1" [ref=e285]
+          - cell "0.0722" [ref=e286]
+          - cell "0.0791" [ref=e287]
+          - cell "Failure analysis only" [ref=e288]
+        - row "G-hybrid 10 0.55 8 0.0490 0.1011 Best diffusion variant, still not ranked as a main method" [ref=e289]:
+          - cell "G-hybrid" [ref=e290]
+          - cell "10" [ref=e291]
+          - cell "0.55" [ref=e292]
+          - cell "8" [ref=e293]
+          - cell "0.0490" [ref=e294]:
+            - strong [ref=e295]: "0.0490"
+          - cell "0.1011" [ref=e296]:
+            - strong [ref=e297]: "0.1011"
+          - cell "Best diffusion variant, still not ranked as a main method" [ref=e298]
+        - row "B-best reference - - - 0.0640 0.1060 Main ProPainter reference under Route B masks" [ref=e299]:
+          - cell "B-best reference" [ref=e300]
+          - cell "-" [ref=e301]
+          - cell "-" [ref=e302]
+          - cell "-" [ref=e303]
+          - cell "0.0640" [ref=e304]
+          - cell "0.1060" [ref=e305]
+          - cell "Main ProPainter reference under Route B masks" [ref=e306]
+    - paragraph [ref=e307]: The diffusion result is not a replacement for ProPainter in the final system. Keyframe propagation lowers measured TCF by sampling fewer frames, but it cannot enforce temporally consistent generated content.
+    - generic [ref=e308]:
+      - heading "G-hybrid restored outputs" [level=3] [ref=e309]
+      - generic [ref=e310]:
+        - generic [ref=e312]: bmx-trees
+        - generic [ref=e315]: tennis
+  - generic [ref=e317]:
+    - heading "Reproducibility" [level=2] [ref=e318]
+    - paragraph [ref=e319]:
+      - text: The numbers above are from the accepted experiment outputs under
+      - code [ref=e320]: outputs/metrics/
+      - text: ". The final table artifacts are generated by:"
+    - generic [ref=e321]: bash scripts/build_results_artifacts.sh
+    - paragraph [ref=e322]:
+      - text: "Accepted experiment IDs:"
+      - code [ref=e323]: phase1_maskscore_fastvqa_20260510_023457_pl220
+      - text: ","
+      - code [ref=e324]: phase2_maskscore_fastvqa_20260510_023457_pl220
+      - text: ","
+      - code [ref=e325]: phase3_maskscore_fastvqa_20260510_023457_pl220
+      - text: ","
+      - code [ref=e326]: phase4_maskscore_fastvqa_altbackend_20260510_pl220
+      - text: ", and"
+      - code [ref=e327]: phase6_core_maskscore_fastvqa_20260511_235610_pl220
+      - text: .
+  - generic [ref=e328]:
+    - heading "Citation" [level=2] [ref=e329]
+    - generic [ref=e330]: "@article{mo2026videoremoval, title = {Dynamic Object Removal and Background Restoration in Videos}, author = {Mo, Zijun and Qiao, Xiaolong}, journal = {AIAA 3201 Course Project}, year = {2026} }"

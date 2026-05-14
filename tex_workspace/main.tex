@@ -1,0 +1,47 @@
+% CVPR 2026 Paper Template
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+% \usepackage{cvpr}              % CAMERA-READY version
+% \usepackage[review]{cvpr}      % REVIEW version
+\usepackage[pagenumbers]{cvpr} % arXiv version
+
+\input{preamble}
+
+\definecolor{cvprblue}{rgb}{0.21,0.49,0.74}
+\usepackage[pagebackref,breaklinks,colorlinks,allcolors=cvprblue]{hyperref}
+
+\def\paperID{*****}
+\def\confName{CVPR}
+\def\confYear{2026}
+
+\title{Dynamic Object Removal and Background Restoration in Videos:\\
+A Progressive Pipeline from Classical to Geometry-Guided Segmentation}
+
+\author{Zijun Mo\\
+HKUST (Guangzhou)\\
+Student ID: 50027008\\
+{\tt\small zmuo729@connect.hkust-gz.edu.cn}
+\and
+Xiaolong Qiao\\
+HKUST (Guangzhou)\\
+Student ID: 50025050\\
+{\tt\small xqiao623@connect.hkust-gz.edu.cn}
+}
+
+\begin{document}
+\maketitle
+
+\input{sec/0_abstract}
+\input{sec/1_intro}
+\input{sec/2_related}
+\input{sec/3_method}
+\input{sec/4_experiments}
+\input{sec/5_conclusion}
+
+{
+    \small
+    \bibliographystyle{ieeenat_fullname}
+    \bibliography{main}
+}
+
+\end{document}
