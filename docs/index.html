@@ -3,133 +3,770 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dynamic Object Removal &amp; Background Restoration</title>
+<link rel="icon" href="data:,">
+<title>Dynamic Object Removal and Background Restoration in Videos</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Helvetica Neue", Arial, sans-serif; background: #fff; color: #222; }
-  .container { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
-  h1 { font-size: 1.9rem; text-align: center; margin-bottom: .5rem; line-height: 1.3; }
-  .authors { text-align: center; color: #555; margin-bottom: .4rem; font-size: 1rem; }
-  .affil { text-align: center; color: #777; font-size: .88rem; margin-bottom: 1rem; }
-  .badges { display: flex; justify-content: center; gap: .7rem; margin-bottom: 2rem; flex-wrap: wrap; }
-  .badge { display: inline-block; padding: .35rem .9rem; border-radius: 4px;
-            font-size: .85rem; font-weight: 600; text-decoration: none; color: #fff; }
-  .badge-gh  { background: #24292e; }
-  .badge-pdf { background: #c0392b; }
-  hr { border: none; border-top: 1px solid #eee; margin: 2rem 0; }
-  h2 { font-size: 1.3rem; margin-bottom: 1rem; border-left: 4px solid #4A90D9;
-        padding-left: .6rem; }
-  p  { line-height: 1.7; color: #333; margin-bottom: .8rem; }
-  .pipeline-img { width: 100%; border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,.1); }
-  table.results { width: 100%; border-collapse: collapse; }
-  table.results th, table.results td { padding: .4rem .3rem; text-align: center;
-    vertical-align: middle; border: 1px solid #eee; }
-  table.results th { background: #f5f5f5; font-size: .85rem; }
-  table.results td:first-child { font-weight: 600; font-size: .85rem; width: 80px; }
-  video { width: 100%; border-radius: 4px; display: block; }
-  .vid-label { font-size: .75rem; color: #666; margin-bottom: .2rem; }
-  .failure-row { display: flex; gap: 1rem; }
-  .failure-row td { flex: 1; }
-  pre { background: #f6f8fa; padding: 1rem; border-radius: 6px;
-         font-size: .82rem; overflow-x: auto; line-height: 1.5; }
-  .note { font-size: .82rem; color: #888; margin-top: .4rem; }
-  @media(max-width:600px) { h1 { font-size: 1.4rem; } }
+  :root {
+    --ink: #1f2933;
+    --muted: #5f6f7c;
+    --line: #dbe3ea;
+    --paper: #ffffff;
+    --soft: #f5f8fb;
+    --blue: #1f6feb;
+    --green: #167a55;
+    --red: #b42318;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    background: #f8fafc;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .container {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 32px 20px 56px;
+  }
+  .hero {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 32px 28px;
+    box-shadow: 0 12px 30px rgba(20, 36, 58, 0.06);
+  }
+  h1 {
+    margin: 0 0 14px;
+    text-align: center;
+    font-size: clamp(1.8rem, 3vw, 2.6rem);
+    line-height: 1.18;
+    letter-spacing: 0;
+  }
+  .subtitle {
+    max-width: 860px;
+    margin: 0 auto 18px;
+    text-align: center;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .authors,
+  .affil {
+    text-align: center;
+    margin: 0;
+    color: var(--muted);
+  }
+  .authors { font-weight: 650; color: #344452; }
+  .affil { margin-top: 6px; font-size: 0.92rem; }
+  .badges {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 22px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 13px;
+    border-radius: 5px;
+    color: #ffffff;
+    font-size: 0.9rem;
+    font-weight: 700;
+  }
+  .badge:hover { text-decoration: none; }
+  .badge-gh { background: #24292f; }
+  .badge-paper { background: #b42318; }
+  .badge-data { background: #167a55; }
+  section {
+    margin-top: 26px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 26px;
+  }
+  h2 {
+    margin: 0 0 16px;
+    font-size: 1.35rem;
+    line-height: 1.25;
+    border-left: 4px solid var(--blue);
+    padding-left: 10px;
+  }
+  h3 {
+    margin: 20px 0 10px;
+    font-size: 1.04rem;
+  }
+  p {
+    margin: 0 0 12px;
+    color: #334250;
+    line-height: 1.72;
+  }
+  .lead {
+    font-size: 1.02rem;
+  }
+  .note {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .metric-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 22px;
+  }
+  .metric {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--soft);
+  }
+  .metric .value {
+    display: block;
+    font-size: 1.55rem;
+    font-weight: 800;
+    color: #12263a;
+    line-height: 1.1;
+  }
+  .metric .label {
+    display: block;
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 0.88rem;
+    line-height: 1.35;
+  }
+  .pipeline-img {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+  }
+  .caption {
+    margin-top: 9px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.55;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .finding {
+    border-left: 3px solid var(--green);
+    background: #f4fbf7;
+    padding: 12px 14px;
+    border-radius: 5px;
+    color: #2c3d32;
+    line-height: 1.65;
+  }
+  .warning {
+    border-left-color: var(--red);
+    background: #fff7f6;
+    color: #4a2b28;
+  }
+  .table-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 760px;
+  }
+  th,
+  td {
+    border: 1px solid var(--line);
+    padding: 9px 10px;
+    vertical-align: top;
+    text-align: left;
+    line-height: 1.45;
+  }
+  th {
+    background: #eef3f8;
+    color: #24384a;
+    font-size: 0.9rem;
+    font-weight: 800;
+  }
+  td.num,
+  th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.final-row td { background: #f0f7ff; }
+  .tag {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 0.78rem;
+    font-weight: 800;
+    color: #0f3f2d;
+    background: #dcfce7;
+    white-space: nowrap;
+  }
+  .tag.fail {
+    color: #6b1c14;
+    background: #fee4e2;
+  }
+  .tag.ref {
+    color: #12366f;
+    background: #dbeafe;
+  }
+  .video-section {
+    display: grid;
+    gap: 16px;
+  }
+  .video-row {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fbfdff;
+  }
+  .video-row h3 {
+    margin: 0;
+    padding: 12px 14px;
+    background: #eef3f8;
+    border-bottom: 1px solid var(--line);
+  }
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    padding: 12px;
+  }
+  .video-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .video-card {
+    min-width: 0;
+  }
+  .video-card .label {
+    margin-bottom: 6px;
+    font-size: 0.86rem;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  video {
+    display: block;
+    width: 100%;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: #111827;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.94em;
+    background: #eef3f8;
+    border: 1px solid #d8e1ea;
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  pre {
+    margin: 0;
+    padding: 14px;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #0f172a;
+    color: #e5e7eb;
+    line-height: 1.5;
+    font-size: 0.88rem;
+  }
+  @media (max-width: 760px) {
+    .container { padding: 18px 12px 36px; }
+    .hero,
+    section { padding: 20px 16px; }
+    .metric-strip,
+    .grid,
+    .video-grid,
+    .video-grid.two { grid-template-columns: 1fr; }
+    table { min-width: 680px; }
+  }
 </style>
 </head>
 <body>
-<div class="container">
+<main class="container">
+  <div class="hero">
+    <h1>Dynamic Object Removal and Background Restoration in Videos</h1>
+    <p class="subtitle">
+      A progressive video object removal system, moving from a classical Mask R-CNN
+      baseline to Track Anything + ProPainter and geometry-guided mask refinement.
+    </p>
+    <p class="authors">Zijun Mo &nbsp; Xiaolong Qiao</p>
+    <p class="affil">HKUST (Guangzhou) &nbsp;|&nbsp; AIAA 3201 Spring 2026</p>
+    <div class="badges">
+      <a class="badge badge-gh" href="https://github.com/Zijun-Mo/AIAA3201_final" target="_blank" rel="noopener">GitHub</a>
+      <a class="badge badge-paper" href="https://github.com/Zijun-Mo/AIAA3201_final/tree/main/tex_workspace" target="_blank" rel="noopener">Report Source</a>
+      <a class="badge badge-data" href="https://github.com/Zijun-Mo/AIAA3201_final/tree/main/docs/videos" target="_blank" rel="noopener">Demo Videos</a>
+    </div>
+  </div>
 
-<h1>Dynamic Object Removal and Background Restoration in Videos:<br>
-A Progressive Pipeline from Classical to Geometry-Guided Segmentation</h1>
+  <section>
+    <h2>Abstract</h2>
+    <p class="lead">
+      We study automatic dynamic object removal and background restoration on the
+      mandatory videos <em>wild</em>, <em>bmx-trees</em>, and <em>tennis</em>. The
+      system starts from a classical baseline combining Mask R-CNN instance masks,
+      sparse optical-flow filtering, temporal borrowing, and <code>cv2.inpaint</code>.
+      It then advances to a Track Anything + ProPainter pipeline and evaluates two
+      mask-side improvements: SAM 3 refinement and VGGT4D geometry priors.
+    </p>
+    <p>
+      The corrected final route is important: Route F does not use Track Anything
+      fusion as the final mask. VGGT4D outputs are converted into prompt anchors and
+      propagated with SAM 2, the alternate backend to the Route B Track Anything
+      baseline. Phase 6 applies SAM 3 refinement on top of this F-best prior and
+      reaches <strong>0.8561 MaskScore</strong> on the two datasets with ground-truth
+      masks. This is an absolute <strong>+0.0639</strong> over Route A and
+      <strong>+0.0470</strong> over Route B; the gain over Route F alone is only
+      <strong>+0.0010</strong>.
+    </p>
+    <div class="metric-strip">
+      <div class="metric">
+        <span class="value">0.8561</span>
+        <span class="label">Best aggregate MaskScore, Phase6-best</span>
+      </div>
+      <div class="metric">
+        <span class="value">+0.0470</span>
+        <span class="label">Absolute MaskScore gain over Track Anything + ProPainter</span>
+      </div>
+      <div class="metric">
+        <span class="value">+0.0010</span>
+        <span class="label">Additional gain from adding SAM 3 after Route F</span>
+      </div>
+      <div class="metric">
+        <span class="value">0.9770</span>
+        <span class="label">Phase 6 MaskScore on tennis; bmx-trees remains harder</span>
+      </div>
+    </div>
+  </section>
 
-<p class="authors">Zijun Mo &nbsp;&nbsp; Xiaolong Qiao</p>
-<p class="affil">HKUST (Guangzhou) &nbsp;·&nbsp; AIAA 3201 Spring 2026</p>
+  <section>
+    <h2>Pipeline Overview</h2>
+    <img src="images/pipeline.png" alt="Overview of the video object removal pipeline" class="pipeline-img">
+    <p class="caption">
+      Routes A-F use the same preprocessed input videos. Route G reuses Route B masks
+      and changes only the inpainting module, so it is treated as a diffusion failure
+      analysis rather than as a ranked main method.
+    </p>
+  </section>
 
-<div class="badges">
-  <a class="badge badge-gh" href="https://github.com/Zijun-Mo/AIAA3201_final" target="_blank">GitHub</a>
-  <a class="badge badge-pdf" href="#" target="_blank">Paper (PDF)</a>
-</div>
+  <section>
+    <h2>Corrected Method Summary</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Route</th>
+            <th>Accepted configuration</th>
+            <th>Role in the final analysis</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>A-best</strong></td>
+            <td>Mask R-CNN + sparse optical-flow dynamic filtering + dilation 3 + Telea inpainting + temporal borrowing with window 2.</td>
+            <td>Classical baseline and lower-bound reference.</td>
+          </tr>
+          <tr>
+            <td><strong>B-best</strong></td>
+            <td>Track Anything coarse masks, bidirectional no-wrap propagation, and ProPainter with neighbor 8, ref stride 12, subvideo 36, resize 0.75, mask dilation 4.</td>
+            <td>Main SOTA reproduction. It improves JM/JR and FAST-VQA over A, although GT coverage is nearly unchanged.</td>
+          </tr>
+          <tr>
+            <td><strong>B+E</strong></td>
+            <td>SAM 3 multi-anchor refinement on Route B masks, merged by logical OR before ProPainter.</td>
+            <td>Raises coverage and FAST-VQA, but slightly lowers JM, so the gain is a coverage-precision trade-off rather than a uniform boundary improvement.</td>
+          </tr>
+          <tr>
+            <td><strong>B+F</strong></td>
+            <td>VGGT4D prior masks are converted into prompt anchors and propagated by SAM 2, because SAM 2 is the alternate backend to Route B's Track Anything.</td>
+            <td>Largest accepted single gain over B. Raw VGGT4D replacement is a negative control with only 0.6087 MaskScore.</td>
+          </tr>
+          <tr>
+            <td><strong>Phase6-best</strong></td>
+            <td>Route F mask followed by SAM 3 boundary refinement, then ProPainter inpainting.</td>
+            <td><span class="tag">Final</span> Best aggregate MaskScore, but only marginally above Route F.</td>
+          </tr>
+          <tr>
+            <td><strong>Route G</strong></td>
+            <td>Fixed Route B masks with Stable Diffusion inpainting variants and hybrid local redraw.</td>
+            <td><span class="tag fail">Failure case</span> Lower TCF does not translate into better video quality; flicker, seams, and hallucinated structure remain.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
-<hr>
+  <section>
+    <h2>Evaluation Protocol</h2>
+    <div class="grid">
+      <p class="finding">
+        <strong>Datasets.</strong> All three mandatory videos are processed:
+        <em>wild</em>, <em>bmx-trees</em>, and <em>tennis</em>. Aggregate mask metrics
+        are computed only on <em>bmx-trees</em> and <em>tennis</em>, because
+        <em>wild</em> has no ground-truth mask.
+      </p>
+      <p class="finding">
+        <strong>Selection metric.</strong> We rank mask-side methods by
+        <code>MaskScore = 0.5*GT_Coverage + 0.25*JM + 0.25*JR</code>. TCF and
+        FAST-VQA are reported as video-quality side metrics.
+      </p>
+      <p class="finding">
+        <strong>Temporal metric caveat.</strong> Lower TCF means smoother frame-to-frame
+        color changes inside the evaluated region, but blurred or wrong stable fills can
+        also reduce TCF. It is not used as the best-method selector.
+      </p>
+      <p class="finding">
+        <strong>No PSNR/SSIM.</strong> The mandatory videos do not provide clean
+        background ground truth, so PSNR and SSIM are omitted rather than estimated from
+        unsuitable references.
+      </p>
+    </div>
+  </section>
 
-<h2>Abstract</h2>
-<p>
-We present a progressive pipeline for automatic dynamic object removal and background
-restoration in videos. Starting from a classical baseline combining Mask R-CNN instance
-segmentation, sparse optical flow filtering, and <code>cv2.inpaint</code>, we advance to a
-state-of-the-art pipeline built on Track Anything and ProPainter. We then introduce two
-complementary improvements: SAM&nbsp;3 mask refinement (Route&nbsp;E) and geometry-guided
-segmentation via VGGT4D attention priors (Route&nbsp;F). Our best configuration (Phase&nbsp;6)
-achieves a MaskScore of <strong>0.8561</strong> on the mandatory datasets (bmx-trees, tennis),
-representing a <strong>+6.9%</strong> gain over the classical baseline. We further analyze a
-diffusion-based inpainting route (Route&nbsp;G) and document its failure modes.
-</p>
+  <section>
+    <h2>Main Quantitative Results</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Method</th>
+            <th class="num">GT-Cov</th>
+            <th class="num">JM</th>
+            <th class="num">JR</th>
+            <th class="num">MaskScore</th>
+            <th class="num">Delta MS vs B</th>
+            <th class="num">TCF</th>
+            <th class="num">FAST-VQA</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A-best</td>
+            <td class="num">0.9222</td>
+            <td class="num">0.6059</td>
+            <td class="num">0.7188</td>
+            <td class="num">0.7923</td>
+            <td class="num">-0.0168</td>
+            <td class="num">0.0608</td>
+            <td class="num">0.0835</td>
+          </tr>
+          <tr>
+            <td>B-best</td>
+            <td class="num">0.9208</td>
+            <td class="num">0.6387</td>
+            <td class="num">0.7562</td>
+            <td class="num">0.8091</td>
+            <td class="num">0.0000</td>
+            <td class="num">0.0640</td>
+            <td class="num">0.1060</td>
+          </tr>
+          <tr>
+            <td>B+E</td>
+            <td class="num">0.9531</td>
+            <td class="num">0.6328</td>
+            <td class="num">0.7625</td>
+            <td class="num">0.8254</td>
+            <td class="num">+0.0163</td>
+            <td class="num">0.0647</td>
+            <td class="num"><strong>0.1258</strong></td>
+          </tr>
+          <tr>
+            <td>B+F</td>
+            <td class="num">0.9722</td>
+            <td class="num">0.7074</td>
+            <td class="num">0.7688</td>
+            <td class="num">0.8552</td>
+            <td class="num">+0.0460</td>
+            <td class="num">0.0698</td>
+            <td class="num">0.1201</td>
+          </tr>
+          <tr class="final-row">
+            <td><strong>Phase6-best</strong></td>
+            <td class="num"><strong>0.9741</strong></td>
+            <td class="num"><strong>0.7075</strong></td>
+            <td class="num"><strong>0.7688</strong></td>
+            <td class="num"><strong>0.8561</strong></td>
+            <td class="num"><strong>+0.0470</strong></td>
+            <td class="num">0.0697</td>
+            <td class="num">0.1234</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Aggregate mask metrics are computed on <em>bmx-trees</em> and <em>tennis</em>.
+      The final selection follows MaskScore, not TCF. B+E has the highest FAST-VQA in
+      this table, while Phase6-best has the best mask metrics.
+    </p>
+  </section>
 
-<hr>
+  <section>
+    <h2>Key Experimental Findings</h2>
+    <div class="grid">
+      <p class="finding">
+        <strong>A to B.</strong> Track Anything + ProPainter gives a real but modest
+        MaskScore gain over the classical baseline (+0.0168), driven by better JM and
+        JR rather than by covering more pixels.
+      </p>
+      <p class="finding">
+        <strong>Route E.</strong> SAM 3 refinement improves GT coverage and yields the
+        highest FAST-VQA, but it slightly lowers JM. The improvement is therefore not a
+        simple across-the-board boundary improvement.
+      </p>
+      <p class="finding">
+        <strong>Route F.</strong> VGGT4D is useful as a prompt prior, not as a raw final
+        mask. The accepted SAM 2 propagation route gives the largest single gain over B
+        (+0.0460 MaskScore).
+      </p>
+      <p class="finding">
+        <strong>Phase 6.</strong> Adding SAM 3 after Route F barely changes the mask
+        metrics (+0.0010 over F), showing diminishing returns after the VGGT4D-derived
+        SAM 2 masks are already in place.
+      </p>
+    </div>
+  </section>
 
-<h2>Method Overview</h2>
-<img src="images/pipeline.png" alt="Pipeline Overview" class="pipeline-img">
+  <section>
+    <h2>Per-Dataset Analysis</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Dataset</th>
+            <th class="num">GT-Cov</th>
+            <th class="num">JM</th>
+            <th class="num">JR</th>
+            <th class="num">Phase 6 MaskScore</th>
+            <th>Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>bmx-trees</td>
+            <td class="num">0.9548</td>
+            <td class="num">0.4938</td>
+            <td class="num">0.5375</td>
+            <td class="num">0.7352</td>
+            <td>Still difficult because fast cyclist motion and foliage occlusion fragment the mask.</td>
+          </tr>
+          <tr>
+            <td>tennis</td>
+            <td class="num">0.9935</td>
+            <td class="num">0.9212</td>
+            <td class="num">1.0000</td>
+            <td class="num">0.9770</td>
+            <td>Much more tractable once prompts are stable; Route B was already strong and Phase 6 improves coverage and JM.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      The Phase 6 gap between tennis and bmx-trees is 0.2418 MaskScore, larger than the
+      aggregate gain from stacking SAM 3 after Route F. Residual error is therefore
+      dominated by dataset difficulty.
+    </p>
+  </section>
 
-<hr>
+  <section>
+    <h2>Video Results</h2>
+    <p>
+      Each panel shows restored video outputs for the mandatory datasets. The comparison
+      uses A-best, B-best, and the final Phase6-best configuration.
+    </p>
+    <div class="video-section">
+      <div class="video-row">
+        <h3>bmx-trees</h3>
+        <div class="video-grid">
+          <div class="video-card">
+            <div class="label">A-best: classical baseline</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase1_maskscore_fastvqa_20260510_023457_pl220/bmx-trees/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="video-card">
+            <div class="label">B-best: Track Anything + ProPainter</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase2_maskscore_fastvqa_20260510_023457_pl220/bmx-trees/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="video-card">
+            <div class="label">Phase6-best: VGGT4D prior + SAM 2 + SAM 3</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase6_core_maskscore_fastvqa_20260511_235610_pl220/bmx-trees/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+      </div>
 
-<h2>Quantitative Results</h2>
-<table class="results" style="margin-bottom:.5rem">
-  <thead>
-    <tr>
-      <th>Method</th><th>GT-Cov</th><th>JM</th><th>JR</th>
-      <th>MaskScore</th><th>TCF↓</th><th>FAST-VQA↑</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td>A-best</td><td>0.9222</td><td>0.6059</td><td>0.7188</td><td>0.7923</td><td>0.0608</td><td>0.0835</td></tr>
-    <tr><td>B-best</td><td>0.9208</td><td>0.6387</td><td>0.7562</td><td>0.8091</td><td>0.0640</td><td>0.1060</td></tr>
-    <tr><td>B+E</td><td>0.9531</td><td>0.6328</td><td>0.7625</td><td>0.8254</td><td>0.0647</td><td>0.1258</td></tr>
-    <tr><td>B+F</td><td>0.9722</td><td>0.7074</td><td>0.7688</td><td>0.8552</td><td>0.0698</td><td>0.1201</td></tr>
-    <tr style="font-weight:700;background:#f0f7ff">
-      <td>Phase 6</td><td>0.9741</td><td>0.7075</td><td>0.7688</td><td>0.8561</td><td>0.0697</td><td>0.1234</td>
-    </tr>
-  </tbody>
-</table>
-<p class="note">MaskScore = 0.5·GT-Cov + 0.25·JM + 0.25·JR. Evaluated on bmx-trees and tennis.</p>
+      <div class="video-row">
+        <h3>tennis</h3>
+        <div class="video-grid">
+          <div class="video-card">
+            <div class="label">A-best: classical baseline</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase1_maskscore_fastvqa_20260510_023457_pl220/tennis/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="video-card">
+            <div class="label">B-best: Track Anything + ProPainter</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase2_maskscore_fastvqa_20260510_023457_pl220/tennis/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="video-card">
+            <div class="label">Phase6-best: VGGT4D prior + SAM 2 + SAM 3</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase6_core_maskscore_fastvqa_20260511_235610_pl220/tennis/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+      </div>
 
-<hr>
+      <div class="video-row">
+        <h3>wild</h3>
+        <div class="video-grid">
+          <div class="video-card">
+            <div class="label">A-best: classical baseline</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase1_maskscore_fastvqa_20260510_023457_pl220/wild/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="video-card">
+            <div class="label">B-best: Track Anything + ProPainter</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase2_maskscore_fastvqa_20260510_023457_pl220/wild/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="video-card">
+            <div class="label">Phase6-best: final method</div>
+            <video controls muted loop playsinline preload="metadata">
+              <source src="videos/phase6_core_maskscore_fastvqa_20260511_235610_pl220/wild/restored_h264.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-<h2>Video Results</h2>
-<p>Each cell shows the <em>restored</em> output video. Columns: A-best (classical baseline),
-B-best (Track Anything + ProPainter), Phase&nbsp;6 (best configuration).</p>
-<table class="results">
-  <thead>
-    <tr><th>Dataset</th><th>A-best</th><th>B-best</th><th>Phase 6</th></tr>
-  </thead>
-  <tbody>
-    <tr><th>bmx-trees</th><td><video autoplay muted loop playsinline><source src="videos/phase1_maskscore_fastvqa_20260510_023457_pl220/bmx-trees/restored_h264.mp4" type="video/mp4"></video></td><td><video autoplay muted loop playsinline><source src="videos/phase2_maskscore_fastvqa_20260510_023457_pl220/bmx-trees/restored_h264.mp4" type="video/mp4"></video></td><td><video autoplay muted loop playsinline><source src="videos/phase6_core_maskscore_fastvqa_20260511_235610_pl220/bmx-trees/restored_h264.mp4" type="video/mp4"></video></td></tr>
-<tr><th>tennis</th><td><video autoplay muted loop playsinline><source src="videos/phase1_maskscore_fastvqa_20260510_023457_pl220/tennis/restored_h264.mp4" type="video/mp4"></video></td><td><video autoplay muted loop playsinline><source src="videos/phase2_maskscore_fastvqa_20260510_023457_pl220/tennis/restored_h264.mp4" type="video/mp4"></video></td><td><video autoplay muted loop playsinline><source src="videos/phase6_core_maskscore_fastvqa_20260511_235610_pl220/tennis/restored_h264.mp4" type="video/mp4"></video></td></tr>
-<tr><th>wild</th><td><video autoplay muted loop playsinline><source src="videos/phase1_maskscore_fastvqa_20260510_023457_pl220/wild/restored_h264.mp4" type="video/mp4"></video></td><td><video autoplay muted loop playsinline><source src="videos/phase2_maskscore_fastvqa_20260510_023457_pl220/wild/restored_h264.mp4" type="video/mp4"></video></td><td><video autoplay muted loop playsinline><source src="videos/phase6_core_maskscore_fastvqa_20260511_235610_pl220/wild/restored_h264.mp4" type="video/mp4"></video></td></tr>
+  <section>
+    <h2>Failure Analysis: Route G</h2>
+    <p>
+      Route G fixes the Route B Track Anything masks and changes only the renderer to
+      Stable Diffusion inpainting variants. Because the masks are fixed, the mask
+      metrics remain identical to B-best by construction. G-hybrid has the lowest TCF
+      among the tested diffusion variants (0.0490), but its selected-output FAST-VQA is
+      below B-best (0.0991 vs. 0.1060; the variant table score is 0.1011), and visual
+      inspection shows temporal flicker, boundary seams, and hallucinated structure.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th class="num">Dilation</th>
+            <th class="num">Denoise</th>
+            <th class="num">Keyframe</th>
+            <th class="num">TCF</th>
+            <th class="num">FAST-VQA</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>G-low</td>
+            <td class="num">2</td>
+            <td class="num">0.35</td>
+            <td class="num">1</td>
+            <td class="num">0.0642</td>
+            <td class="num">0.0830</td>
+            <td>Failure analysis only</td>
+          </tr>
+          <tr>
+            <td>G-mid</td>
+            <td class="num">10</td>
+            <td class="num">0.55</td>
+            <td class="num">4</td>
+            <td class="num">0.0507</td>
+            <td class="num">0.0930</td>
+            <td>Failure analysis only</td>
+          </tr>
+          <tr>
+            <td>G-high</td>
+            <td class="num">20</td>
+            <td class="num">0.75</td>
+            <td class="num">1</td>
+            <td class="num">0.0722</td>
+            <td class="num">0.0791</td>
+            <td>Failure analysis only</td>
+          </tr>
+          <tr>
+            <td>G-hybrid</td>
+            <td class="num">10</td>
+            <td class="num">0.55</td>
+            <td class="num">8</td>
+            <td class="num"><strong>0.0490</strong></td>
+            <td class="num"><strong>0.1011</strong></td>
+            <td>Best diffusion variant, still not ranked as a main method</td>
+          </tr>
+          <tr>
+            <td>B-best reference</td>
+            <td class="num">-</td>
+            <td class="num">-</td>
+            <td class="num">-</td>
+            <td class="num">0.0640</td>
+            <td class="num">0.1060</td>
+            <td>Main ProPainter reference under Route B masks</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="finding warning">
+      The diffusion result is not a replacement for ProPainter in the final system.
+      Keyframe propagation lowers measured TCF by sampling fewer frames, but it cannot
+      enforce temporally consistent generated content.
+    </p>
+    <div class="video-row">
+      <h3>G-hybrid restored outputs</h3>
+      <div class="video-grid two">
+        <div class="video-card">
+          <div class="label">bmx-trees</div>
+          <video controls muted loop playsinline preload="metadata">
+            <source src="videos/phase5_maskscore_fastvqa_20260510_023457_pl220/bmx-trees/restored_h264.mp4" type="video/mp4">
+          </video>
+        </div>
+        <div class="video-card">
+          <div class="label">tennis</div>
+          <video controls muted loop playsinline preload="metadata">
+            <source src="videos/phase5_maskscore_fastvqa_20260510_023457_pl220/tennis/restored_h264.mp4" type="video/mp4">
+          </video>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  </tbody>
-</table>
+  <section>
+    <h2>Reproducibility</h2>
+    <p>
+      The numbers above are from the accepted experiment outputs under
+      <code>outputs/metrics/</code>. The final table artifacts are generated by:
+    </p>
+    <pre>bash scripts/build_results_artifacts.sh</pre>
+    <p class="note">
+      Accepted experiment IDs: <code>phase1_maskscore_fastvqa_20260510_023457_pl220</code>,
+      <code>phase2_maskscore_fastvqa_20260510_023457_pl220</code>,
+      <code>phase3_maskscore_fastvqa_20260510_023457_pl220</code>,
+      <code>phase4_maskscore_fastvqa_altbackend_20260510_pl220</code>, and
+      <code>phase6_core_maskscore_fastvqa_20260511_235610_pl220</code>.
+    </p>
+  </section>
 
-<hr>
-
-<h2>Failure Analysis: Route G (Diffusion Inpainting)</h2>
-<p>Stable Diffusion inpainting (Route&nbsp;G) produces severe temporal flickering due to
-independent per-frame latent noise sampling. Below are the best G-hybrid variant results
-compared to B-best — the flickering and boundary hallucination are clearly visible.</p>
-<table class="results">
-  <thead><tr><th>Dataset</th><th>G-hybrid (Route G)</th></tr></thead>
-  <tbody><tr><td><div class='vid-label'>bmx-trees</div><video autoplay muted loop playsinline><source src='videos/phase5_maskscore_fastvqa_20260510_023457_pl220/bmx-trees/restored_h264.mp4' type='video/mp4'></video></td><td><div class='vid-label'>tennis</div><video autoplay muted loop playsinline><source src='videos/phase5_maskscore_fastvqa_20260510_023457_pl220/tennis/restored_h264.mp4' type='video/mp4'></video></td></tr></tbody>
-</table>
-
-<hr>
-
-<h2>Citation</h2>
+  <section>
+    <h2>Citation</h2>
 <pre>@article{mo2026videoremoval,
   title   = {Dynamic Object Removal and Background Restoration in Videos},
   author  = {Mo, Zijun and Qiao, Xiaolong},
   journal = {AIAA 3201 Course Project},
   year    = {2026}
 }</pre>
-
-</div>
+  </section>
+</main>
 </body>
 </html>
